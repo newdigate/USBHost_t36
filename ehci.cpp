@@ -206,6 +206,12 @@ void USBHost::begin()
 	USBPHY2_CTRL_SET = USBPHY_CTRL_ENUTMILEVEL2 | USBPHY_CTRL_ENUTMILEVEL3;
 	USBPHY2_PWD = 0;
 	#ifdef ARDUINO_TEENSY41
+	// Teensy 4.1 enables the USB host port's 5V supply by driving EMC_40
+	// (GPIO8.26) high.  Do NOT add a MIMXRT1060-EVKB branch that copies this:
+	// on the EVKB the host port (J47 / USB_OTG2) is fed by a dedicated
+	// USB_OTG2_VBUS rail in hardware (no software switch -- see the EVKB User
+	// Manual, Table 12 power rails and Table 18 USB ports), and EMC_40 there is
+	// part of the SDRAM (SEMC) bus, so driving it would clash with the SDRAM.
 	IOMUXC_SW_MUX_CTL_PAD_GPIO_EMC_40 = 5;
 	IOMUXC_SW_PAD_CTL_PAD_GPIO_EMC_40 = 0x0008; // slow speed, weak 150 ohm drive
 	GPIO8_GDIR |= 1<<26;

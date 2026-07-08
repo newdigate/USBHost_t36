@@ -217,6 +217,24 @@ void USBHost::begin()
 	GPIO8_GDIR |= 1<<26;
 	GPIO8_DR_SET = 1<<26;
 	#endif
+#elif defined(__IMXRT1176__)
+	// RT1176: host on USB_OTG2 + USBPHY2.  Bring up PHY2's 480 MHz PLL exactly
+	// as the device side does for PHY1 (cores/usb.c usb_pll_phy_init), then fall
+	// through to the generic EHCI host setup below (USBHS_* alias -> OTG2).
+	CCM_LPCG115_DIRECT  = 1u;                               // shared USB clock gate (kCLOCK_Usb)
+	USBPHY2_CTRL_CLR    = USBPHY_CTRL_SFTRST;
+	USBPHY2_PLL_SIC_SET = USBPHY_PLL_SIC_PLL_REG_ENABLE;
+	delayMicroseconds(20);                                  // SDK: >= 15 us
+	USBPHY2_PLL_SIC_SET = USBPHY_PLL_SIC_PLL_POWER;
+	USBPHY2_PLL_SIC     = (USBPHY2_PLL_SIC & ~USBPHY_PLL_SIC_PLL_DIV_SEL_MASK)
+	                      | USBPHY_PLL_SIC_PLL_DIV_SEL(3);  // 24 -> 480 MHz
+	USBPHY2_PLL_SIC_CLR = USBPHY_PLL_SIC_PLL_BYPASS;
+	USBPHY2_PLL_SIC_SET = USBPHY_PLL_SIC_PLL_EN_USB_CLKS;
+	USBPHY2_CTRL_CLR    = USBPHY_CTRL_CLKGATE;
+	for (uint32_t i = 0; i < 100 && !(USBPHY2_PLL_SIC & USBPHY_PLL_SIC_PLL_LOCK); i++) {
+		delayMicroseconds(10);                              // QEMU: PLL_SIC reads 0 -> times out, proceeds
+	}
+	USBPHY2_PWD = 0;
 #endif
 	delay(10);
 

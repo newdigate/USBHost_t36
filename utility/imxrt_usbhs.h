@@ -1,9 +1,10 @@
 #ifndef IMXRT_USBHS_H_
 #define IMXRT_USBHS_H_
 
-#if defined(__IMXRT1052__) || defined(__IMXRT1062__)
- 
+#if defined(__IMXRT1052__) || defined(__IMXRT1062__) || defined(__IMXRT1176__)
+
 // Allow USB host code written for "USBHS" on Teensy 3.6 to compile for "USB2" on Teensy 4.0
+// (and for USB_OTG2, the host controller, on the MIMXRT1170-EVKB / i.MX RT1176)
 
 #define IRQ_USBHS		IRQ_USB2
 
@@ -78,5 +79,5 @@
 #define USBHS_USB_SBUSCFG	USB2_SBUSCFG
 
 
-#endif // __IMXRT1052__ or __IMXRT1062__
+#endif // __IMXRT1052__ or __IMXRT1062__ or __IMXRT1176__
 #endif // IMXRT_USBHS_H_

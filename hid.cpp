@@ -35,6 +35,15 @@
 #define print   USBHost::print_
 #define println USBHost::println_
 
+// RT1176: plain .bss is DTCM, which the EHCI DMA master cannot reach; DMAMEM
+// places data in DMA-reachable OCRAM.  On Teensy .bss is already OCRAM (and
+// DMAMEM is a different, non-zero-init section), so scope this to our platform.
+#if defined(__IMXRT1176__)
+#define USBHOST_DMAMEM DMAMEM
+#else
+#define USBHOST_DMAMEM
+#endif
+
 void USBHIDParser::init()
 {
 	contribute_Pipes(mypipes, sizeof(mypipes)/sizeof(Pipe_t));
@@ -188,7 +197,14 @@ void USBHIDParser::control(const Transfer_t *transfer)
 				((device->idProduct == 0x0268) || (device->idProduct == 0x042F)/* || (device->idProduct == 0x03D5)*/)) {
 			println("send special PS3 feature command");
 			mk_setup(setup, 0x21, 9, 0x03F4, 0, 4); // ps3 tell to send report 1?
-			static uint8_t ps3_feature_F4_report[] = {0x42, 0x0c, 0x00, 0x00};
+			// DMA-read as the control OUT data stage, so must be in OCRAM on
+			// RT1176.  DMAMEM is a NOLOAD section (not loaded, not zero-inited)
+			// and cannot carry a static initialiser, so assign at run time.
+			static USBHOST_DMAMEM uint8_t ps3_feature_F4_report[4];
+			ps3_feature_F4_report[0] = 0x42;
+			ps3_feature_F4_report[1] = 0x0c;
+			ps3_feature_F4_report[2] = 0x00;
+			ps3_feature_F4_report[3] = 0x00;
 			queue_Control_Transfer(device, &setup, ps3_feature_F4_report, this);
 		}
 	}

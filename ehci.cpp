@@ -60,9 +60,21 @@
 #define PERIODIC_LIST_SIZE  32
 #endif
 
-// The EHCI periodic schedule, used for interrupt pipes/endpoints
-static uint32_t periodictable[PERIODIC_LIST_SIZE] __attribute__ ((aligned(4096), used));
-static uint8_t  uframe_bandwidth[PERIODIC_LIST_SIZE*8];
+// RT1176: plain .bss is DTCM, which the EHCI DMA master cannot reach; DMAMEM
+// places data in DMA-reachable OCRAM.  On Teensy .bss is already OCRAM (and
+// DMAMEM is a different, non-zero-init section), so scope this to our platform.
+#if defined(__IMXRT1176__)
+#define USBHOST_DMAMEM DMAMEM
+#else
+#define USBHOST_DMAMEM
+#endif
+
+// The EHCI periodic schedule, used for interrupt pipes/endpoints.  Walked by the
+// controller's DMA (USBHS_PERIODICLISTBASE), so it must be in OCRAM on RT1176.
+// Explicitly filled with T-bit/invalid entries at run time (init_qTD/begin), so
+// the NOLOAD DMAMEM section not being zero-inited is fine.
+static USBHOST_DMAMEM uint32_t periodictable[PERIODIC_LIST_SIZE] __attribute__ ((aligned(4096), used));
+static uint8_t  uframe_bandwidth[PERIODIC_LIST_SIZE*8]; // software bandwidth accounting, CPU-only (not DMA)
 
 // State of the 1 and only physical USB host port on Teensy 3.6
 static uint8_t  port_state;

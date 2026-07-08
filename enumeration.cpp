@@ -44,9 +44,20 @@ static USBDriver *available_drivers = NULL;
 // Static buffers used during enumeration.  One a single USB device
 // may enumerate at once, because USB address zero is used, and
 // because this static buffer & state info can't be shared.
-static uint8_t enumbuf[2048] __attribute__ ((aligned(16)));
-static setup_t enumsetup __attribute__ ((aligned(16)));
-static uint16_t enumlen;
+// RT1176: plain .bss is DTCM, which the EHCI DMA master cannot reach; DMAMEM
+// places data in DMA-reachable OCRAM.  On Teensy .bss is already OCRAM (and
+// DMAMEM is a different, non-zero-init section), so scope this to our platform.
+// enumbuf is DMA-written by GET_DESCRIPTOR data stages; enumsetup is DMA-read as
+// the 8-byte SETUP packet (queue_Control_Transfer -> init_qTD(setup,8,PID_SETUP)).
+// Both are filled before each use, so the NOLOAD DMAMEM section is fine.
+#if defined(__IMXRT1176__)
+#define USBHOST_DMAMEM DMAMEM
+#else
+#define USBHOST_DMAMEM
+#endif
+static USBHOST_DMAMEM uint8_t enumbuf[2048] __attribute__ ((aligned(16)));
+static USBHOST_DMAMEM setup_t enumsetup __attribute__ ((aligned(16)));
+static uint16_t enumlen; // CPU-only length bookkeeping (not DMA)
 
 // True while any device is present but not yet fully configured.
 // Only one USB device may be in this state at a time (responding

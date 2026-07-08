@@ -57,9 +57,21 @@ static strbuf_t * free_strbuf_list = NULL;
 // A small amount of non-driver memory, just to get things started
 // TODO: is this really necessary?  Can these be eliminated, so we
 // use only memory from the drivers?
-static Device_t memory_Device[1];
-static Pipe_t memory_Pipe[1] __attribute__ ((aligned(32)));
-static Transfer_t memory_Transfer[4] __attribute__ ((aligned(32)));
+// RT1176: plain .bss is DTCM, which the EHCI DMA master cannot reach; DMAMEM
+// places data in DMA-reachable OCRAM.  On Teensy .bss is already OCRAM (and
+// DMAMEM is a different, non-zero-init section), so scope this to our platform.
+// These seed pools hold Pipe_t (contains the DMA-walked queue head qh) and
+// Transfer_t (contains the DMA-walked qTD).  init_Device_Pipe_Transfer_memory()
+// links them into the free lists explicitly (contribute_*), so the NOLOAD DMAMEM
+// section not being zero-inited is fine.
+#if defined(__IMXRT1176__)
+#define USBHOST_DMAMEM DMAMEM
+#else
+#define USBHOST_DMAMEM
+#endif
+static USBHOST_DMAMEM Device_t memory_Device[1];
+static USBHOST_DMAMEM Pipe_t memory_Pipe[1] __attribute__ ((aligned(32)));
+static USBHOST_DMAMEM Transfer_t memory_Transfer[4] __attribute__ ((aligned(32)));
 
 void USBHost::init_Device_Pipe_Transfer_memory(void)
 {

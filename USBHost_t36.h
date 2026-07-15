@@ -2663,6 +2663,14 @@ private:
     elapsedMillis _emlastRead;
     uint8_t _read_sector_buffer1[512];
     uint8_t _read_sector_buffer2[512];
+#if defined(__IMXRT1176__)
+    // RT1176: DMAMEM-resident staging for the CBW/CSW.  The driver builds these on
+    // the stack, but the OTG2 EHCI DMA master cannot reach DTCM (where the stack
+    // lives) -- these ride the DMAMEM USBDrive object instead.  Used by
+    // MassStorageDriver.cpp msDoCommand()/msGetCSW().
+    msCommandBlockWrapper_t  _cbw_dma __attribute__((aligned(32)));
+    msCommandStatusWrapper_t _csw_dma __attribute__((aligned(32)));
+#endif
     bool m_initDone = false;
     uint8_t m_errorCode = MS_NO_MEDIA_ERR;
     uint32_t m_errorLine = 0;

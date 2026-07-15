@@ -381,7 +381,14 @@ uint8_t USBDrive::msDoCommand(msCommandBlockWrapper_t *CBW,	void *buffer)
 #endif	
 	if(CBWTag == 0xFFFFFFFF) CBWTag = 1;
 	// digitalWriteFast(2, HIGH);
+#if defined(__IMXRT1176__)
+	// RT1176: stage the caller's stack CBW (DTCM) through this DMAMEM object's
+	// member -- the OTG2 EHCI DMA master cannot reach DTCM.
+	memcpy(&_cbw_dma, CBW, sizeof(msCommandBlockWrapper_t));
+	queue_Data_Transfer(datapipeOut, &_cbw_dma, sizeof(msCommandBlockWrapper_t), this); // Command stage.
+#else
 	queue_Data_Transfer(datapipeOut, CBW, sizeof(msCommandBlockWrapper_t), this); // Command stage.
+#endif
 	while(!msOutCompleted) yield();
 	// digitalWriteFast(2, LOW);
 	msOutCompleted = false;
@@ -417,6 +424,15 @@ uint8_t USBDrive::msGetCSW(void) {
 #ifdef DBGprint
 	println("msGetCSW()");
 #endif
+#if defined(__IMXRT1176__)
+	// RT1176: receive the CSW into this DMAMEM object's member -- the stack (DTCM)
+	// is unreachable by the OTG2 EHCI DMA master.
+	msCommandStatusWrapper_t &StatusBlockWrapper = _csw_dma;
+	StatusBlockWrapper.Signature = CSW_SIGNATURE;
+	StatusBlockWrapper.Tag = 0;
+	StatusBlockWrapper.DataResidue = 0;
+	StatusBlockWrapper.Status = 0;
+#else
 	msCommandStatusWrapper_t StatusBlockWrapper = (msCommandStatusWrapper_t)
 	{
 		.Signature = CSW_SIGNATURE,
@@ -424,6 +440,7 @@ uint8_t USBDrive::msGetCSW(void) {
 		.DataResidue = 0, // TODO: Proccess this if received.
 		.Status = 0
 	};
+#endif
 	queue_Data_Transfer(datapipeIn, &StatusBlockWrapper, sizeof(StatusBlockWrapper), this);
 	while(!msInCompleted) yield();
 	msInCompleted = false;
@@ -449,7 +466,13 @@ uint8_t USBDrive::msTestReady() {
 		.CommandLength      = 6,
 		.CommandData        = {CMD_TEST_UNIT_READY, 0x00, 0x00, 0x00, 0x00, 0x00}
 	};
+#if defined(__IMXRT1176__)
+	// RT1176: stage the stack CBW through the DMAMEM object member (DTCM unreachable).
+	memcpy(&_cbw_dma, &CommandBlockWrapper, sizeof(CommandBlockWrapper));
+	queue_Data_Transfer(datapipeOut, &_cbw_dma, sizeof(CommandBlockWrapper), this);
+#else
 	queue_Data_Transfer(datapipeOut, &CommandBlockWrapper, sizeof(CommandBlockWrapper), this);
+#endif
 	while(!msOutCompleted) yield();
 	msOutCompleted = false;
 	return msGetCSW();
@@ -471,7 +494,13 @@ uint8_t USBDrive::msStartStopUnit(uint8_t mode) {
 		.CommandLength      = 6,
 		.CommandData        = {CMD_START_STOP_UNIT, 0x01, 0x00, 0x00, mode, 0x00}
 	};
+#if defined(__IMXRT1176__)
+	// RT1176: stage the stack CBW through the DMAMEM object member (DTCM unreachable).
+	memcpy(&_cbw_dma, &CommandBlockWrapper, sizeof(CommandBlockWrapper));
+	queue_Data_Transfer(datapipeOut, &_cbw_dma, sizeof(CommandBlockWrapper), this);
+#else
 	queue_Data_Transfer(datapipeOut, &CommandBlockWrapper, sizeof(CommandBlockWrapper), this);
+#endif
 	while(!msOutCompleted) yield();
 	msOutCompleted = false;
 	return msGetCSW();
@@ -643,7 +672,13 @@ uint8_t USBDrive::msReadSectorsWithCB(
 
 	if(CBWTag == 0xFFFFFFFF) CBWTag = 1;
 	// digitalWriteFast(2, HIGH);
+#if defined(__IMXRT1176__)
+	// RT1176: stage the stack CBW through the DMAMEM object member (DTCM unreachable).
+	memcpy(&_cbw_dma, &CommandBlockWrapper, sizeof(msCommandBlockWrapper_t));
+	queue_Data_Transfer(datapipeOut, &_cbw_dma, sizeof(msCommandBlockWrapper_t), this); // Command stage.
+#else
 	queue_Data_Transfer(datapipeOut, &CommandBlockWrapper, sizeof(msCommandBlockWrapper_t), this); // Command stage.
+#endif
 
 	while(!msOutCompleted && (_emlastRead < READ_CALLBACK_TIMEOUT_MS)) yield();
 	// digitalWriteFast(2, LOW);

@@ -270,7 +270,19 @@ void USBHost::begin()
 
 	// turn on the USBHS controller
 	//USBHS_USBMODE = USBHS_USBMODE_TXHSD(5) | USBHS_USBMODE_CM(3); // host mode
+#if defined(__IMXRT1176__)
+	// OTG2 host: Stream Disable (SDIS, USBMODE bit 4) -- fill the TX latency FIFO to
+	// capacity (the whole packet) before launching it onto the bus, so a full-size
+	// (512-byte) bulk-OUT cannot underrun (qTD Data Buffer Error, token bit 5) on the
+	// slower OTG2 DMA path, which can't stream-feed the FIFO fast enough.  init_qTD
+	// sets CERR=0 (infinite retry), so an underrun otherwise hangs forever.  Small
+	// peak-throughput trade-off, fine for mass storage.  RM 62.7.1.28 / USBMODE.SDIS:
+	// "overruns/underruns ... eliminated for low bandwidth systems where the ... TX
+	// buffers are sufficient to contain the entire packet."
+	USBHS_USBMODE = USBHS_USBMODE_CM(3) | (1u << 4); // host mode + stream disable
+#else
 	USBHS_USBMODE = USBHS_USBMODE_CM(3); // host mode
+#endif
 	USBHS_USBINTR = 0;
 	USBHS_PERIODICLISTBASE = (uint32_t)periodictable;
 	USBHS_FRINDEX = 0;

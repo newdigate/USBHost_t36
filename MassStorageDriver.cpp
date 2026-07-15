@@ -393,15 +393,34 @@ uint8_t USBDrive::msDoCommand(msCommandBlockWrapper_t *CBW,	void *buffer)
 	// digitalWriteFast(2, LOW);
 	msOutCompleted = false;
 	if((CBW->Flags == CMD_DIR_DATA_IN)) { // Data stage from device.
+#if defined(__IMXRT1176__)
+		// RT1176: the OTG2 EHCI DMA master can't reach TCM.  If the caller's data
+		// buffer is in TCM (e.g. findPartition's stack MBR union), bounce it through
+		// the DMAMEM _data_bounce member.  DMAMEM/SDRAM buffers pass straight through.
+		bool _dbounce = ((uint32_t)buffer < 0x20240000u) && (CBW->TransferLength <= sizeof(_data_bounce));
+		queue_Data_Transfer(datapipeIn, _dbounce ? (void*)_data_bounce : buffer, CBW->TransferLength, this);
+		while(!msInCompleted) yield();
+		msInCompleted = false;
+		if(_dbounce) memcpy(buffer, _data_bounce, CBW->TransferLength);
+#else
 		queue_Data_Transfer(datapipeIn, buffer, CBW->TransferLength, this);
 	while(!msInCompleted) yield();
 	// digitalWriteFast(2, HIGH);
 	msInCompleted = false;
+#endif
 	} else {							  // Data stage to device.
+#if defined(__IMXRT1176__)
+		bool _dbounce = ((uint32_t)buffer < 0x20240000u) && (CBW->TransferLength <= sizeof(_data_bounce));
+		if(_dbounce) memcpy(_data_bounce, buffer, CBW->TransferLength);
+		queue_Data_Transfer(datapipeOut, _dbounce ? (void*)_data_bounce : buffer, CBW->TransferLength, this);
+		while(!msOutCompleted) yield();
+		msOutCompleted = false;
+#else
 		queue_Data_Transfer(datapipeOut, buffer, CBW->TransferLength, this);
 	while(!msOutCompleted) yield();
 	// digitalWriteFast(2, LOW);
 	msOutCompleted = false;
+#endif
 	}
 	CSWResult = msGetCSW(); // Status stage.
 	// All stages of this transfer have completed.

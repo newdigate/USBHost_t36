@@ -2670,6 +2670,10 @@ private:
     // MassStorageDriver.cpp msDoCommand()/msGetCSW().
     msCommandBlockWrapper_t  _cbw_dma __attribute__((aligned(32)));
     msCommandStatusWrapper_t _csw_dma __attribute__((aligned(32)));
+    // Data-stage bounce: internal partition scans (findPartition/GPT/MBR) read a
+    // sector into a stack (TCM) buffer; msDoCommand() bounces it through here.
+    // SdFat and user code pass DMAMEM buffers, which skip the bounce.
+    uint8_t _data_bounce[512] __attribute__((aligned(32)));
 #endif
     bool m_initDone = false;
     uint8_t m_errorCode = MS_NO_MEDIA_ERR;

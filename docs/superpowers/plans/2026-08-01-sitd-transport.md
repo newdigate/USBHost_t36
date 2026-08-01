@@ -18,9 +18,33 @@ translator; the reference manual confirms `HubAddr = 0` for a directly attached
 device. This plan may proceed.
 
 **M0b — golden trace — is still outstanding and blocks Task 6 only.** Capture
-`usb_audio_uac1_test` streaming from a working host and store the reference
-figures. Note the SDK example cannot be used for this: it fails to enumerate the
-test headset (spec section 12).
+`usb_audio_uac1_test` streaming and store the reference figures. Note the SDK
+example cannot be used for this: it fails to enumerate the test headset (spec
+section 12).
+
+> **Blocked on instrumentation, 2026-08-01.** Probing the EVKB link yields
+> 95–97% `Error packet` frames, while the *same rig, leads and ground* captures
+> the same headset against a Mac at **0% errors** (`Untitled.csv`,
+> `capture-pre-isoaudio-4-headset-to-mac.csv`). So the analyser, sample rate,
+> breakout and headset are all eliminated — the fault is specific to probing the
+> EVKB link.
+>
+> Ruled out: sample rate (fails identically at 500 MS/s, 41 samples/bit),
+> breakout hardware, and ground reference (lead is connected).
+>
+> Leading candidate: **D+/D− transposed** in the analyser's channel assignment
+> when the leads were re-probed. The successfully decoded bytes sit 664 ns apart
+> — 8 bits at 12 Mbps almost exactly — so the decoder is locking onto real
+> full-speed signal and then mis-decoding it, which points at polarity rather
+> than signal quality. Testable for free by swapping the assignment in Logic 2
+> and re-decoding the existing capture.
+>
+> Next if that fails: capture D+ and D− as plain digital channels with no
+> protocol analyzer, on the EVKB link and the Mac link, and compare edges and
+> idle levels directly. Every export so far is the decoder's interpretation, not
+> the signal.
+>
+> Tasks 1–5 do not depend on this.
 
 **Read before starting:**
 - `docs/superpowers/specs/2026-08-01-usb-uac1-audio-output-design.md` sections 2,

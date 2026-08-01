@@ -45,6 +45,24 @@ tested without hardware, and it is where the fiddly logic lives.
 
 ## Task 1: Hardware gate — prove full-speed isochronous works
 
+> **RESULT 2026-08-01: PASSED — but not by the route below.**
+>
+> NXP's `usb_host_audio_speaker` could not enumerate the test headset on either
+> OTG1 or OTG2 (`kUSB_HostEventEnumerationFail`). Connector choice, board power,
+> the OTG adapter, `USBMODE.SDIS` and PSPD handling were each tested and
+> eliminated; the fault is in that example and remains unexplained.
+>
+> The gate was instead answered with **this library's own stack**, via
+> `rt1176-evkb/examples/usb/usb_audio_uac1_test`, which enumerated the headset
+> directly on the `USB_OTG2` root port and printed the full topology matching
+> `tools/usbcap.py descriptors` byte for byte. That also satisfies Task 9.
+>
+> Consequence for M0b: capture the golden trace from `usb_audio_uac1_test`, not
+> from the SDK example. See the spec's section 12 for the reference-manual
+> passages confirming the embedded-TT premise.
+>
+> The steps below are retained as the record of what was attempted.
+
 **This gates the follow-on siTD plan, not the rest of this one.** No repository
 files change.
 

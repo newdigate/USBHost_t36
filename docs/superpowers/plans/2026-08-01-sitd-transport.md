@@ -435,6 +435,33 @@ previously assumed every frame-list entry was a queue head."
 
 ## Task 4: First packet on the wire
 
+> **DONE 2026-08-01 — commit `94b889f`.** Verified on MIMXRT1170-EVKB against a
+> Logitech USB Headset (046D:0A8F) on `USB_OTG2`:
+>
+> ```
+> UAC1-TEST: siTD posted, 192 bytes
+> UAC1-TEST: siTD active=0 xact_err=0 babble=0 buf_err=0 bytes_left=0
+> UAC1-TEST: SITD PASS - controller sent the packet
+> ```
+>
+> `active=0` means the controller walked the periodic list, found the siTD and
+> executed it; `bytes_left=0` means all 192 bytes went out; no error bits means
+> the transaction completed on the bus.
+>
+> Confirmed on silicon, having been only inference before:
+>
+> - an isochronous OUT takes **no** complete-splits (`cmask = 0`) — the least
+>   certain assumption in this design
+> - T-count `(len + 187) / 188` with TP seeding Begin/Mid/End
+> - `HubAddr = 0` addresses the embedded TT for a root-port device
+>   (RM Table 62-56)
+> - siTD layout, 32-byte alignment and DMAMEM placement — `buf_err` would have
+>   flagged a DMA-unreachable payload
+>
+> Verified from the siTD writeback, not a capture. Steps 3–4 below describe the
+> analyser check that was originally planned; it was not used and is not
+> required.
+
 The milestone that de-risks everything. One siTD, one 192-byte OUT, visible on
 the analyser.
 

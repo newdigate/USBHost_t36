@@ -55,11 +55,21 @@ static void test_rejects_garbage(void)
 	CHECK(!uac1_parse_config(0, 0, &t));
 }
 
+static void test_identifies_interfaces(void)
+{
+	UAC1Topology t;
+	CHECK(uac1_parse_config(fixture, fixture_len, &t));
+	CHECK_EQ(t.bcd_adc, 0x0100);           // UAC 1.00
+	CHECK_EQ(t.control_interface, 0);
+	CHECK_EQ(t.streaming_interface, 2);    // not 1, which is the microphone
+}
+
 int main(void)
 {
 	load_fixture();
 	test_fixture_is_a_config_descriptor();
 	test_rejects_garbage();
+	test_identifies_interfaces();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

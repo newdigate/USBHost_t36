@@ -126,6 +126,99 @@ static void test_parses_without_config_header(void)
 	CHECK_EQ(uac1_find_alt(&offset, 48000, 2, 16), 7);
 }
 
+// This parser sits in front of descriptor bytes from an arbitrary plugged-in
+// device, so it must survive malformed and adversarial input without
+// crashing or reading out of bounds. test_rejects_garbage above only tries a
+// 16-byte zero buffer; this pins the specific safety properties the review
+// had to reconstruct by hand. Build once with -fsanitize=address,undefined
+// when changing this function.
+static void test_survives_hostile_input(void)
+{
+	// (a) bLength == 0 embedded mid-stream must stop the parse rather than
+	// loop forever. This is the single most safety-critical invariant in
+	// the file: both parse loops require desc[i] >= 2 to continue.
+	{
+		uint8_t buf[11] = {
+			9, 0x04, 0, 0, 1, 0x01, 0x02, 0, 0,  // AudioStreaming interface, no endpoint yet
+			0, 0,                                 // bLength == 0 -- must stop here
+		};
+		UAC1Topology t;
+		CHECK(!uac1_parse_config(buf, sizeof(buf), &t));
+	}
+
+	// (b) An endpoint descriptor claiming a bLength that overruns the real
+	// buffer (200, with only 7 bytes actually present) must not be read
+	// past the buffer end.
+	{
+		uint8_t buf[16] = {
+			9, 0x04, 0, 0, 1, 0x01, 0x02, 0, 0,    // AudioStreaming interface
+			200, 0x05, 0x04, 0x01, 0, 0, 0,        // endpoint claims bLength 200
+		};
+		UAC1Topology t;
+		CHECK(!uac1_parse_config(buf, sizeof(buf), &t));
+	}
+
+	// (c) A streaming interface with only an IN endpoint (0x81) must not be
+	// selected as the playback interface.
+	{
+		uint8_t buf[16] = {
+			9, 0x04, 0, 0, 1, 0x01, 0x02, 0, 0,   // AudioStreaming interface
+			7, 0x05, 0x81, 0x01, 0x40, 0, 1,      // IN, isochronous endpoint
+		};
+		UAC1Topology t;
+		CHECK(!uac1_parse_config(buf, sizeof(buf), &t));
+	}
+
+	// (d) Truncating the real fixture at every possible length must never
+	// crash or read out of bounds. The return value is unconstrained here
+	// (some prefixes may parse to true, most to false); what matters is
+	// that the loop below completes -- verified for real by running under
+	// ASan/UBSan.
+	{
+		UAC1Topology t;
+		size_t survived = 0;
+		for (size_t n = 0; n <= fixture_len; n++) {
+			uac1_parse_config(fixture, n, &t);
+			survived++;
+		}
+		CHECK_EQ(survived, fixture_len + 1);
+	}
+
+	// (e) A device advertising more than UAC1_MAX_ALTS (16) alternate
+	// settings on one iso-OUT streaming interface must be capped, not
+	// overflow out->alts[]. Built with a loop rather than a giant literal.
+	{
+		const uint8_t num_alts = 20;  // > UAC1_MAX_ALTS
+		uint8_t buf[20 * 16];
+		size_t pos = 0;
+		for (uint8_t k = 0; k < num_alts; k++) {
+			buf[pos + 0] = 9;     // bLength
+			buf[pos + 1] = 0x04;  // INTERFACE
+			buf[pos + 2] = 5;     // bInterfaceNumber (same iface, every alt)
+			buf[pos + 3] = k;     // bAlternateSetting
+			buf[pos + 4] = 1;     // bNumEndpoints
+			buf[pos + 5] = 0x01;  // bInterfaceClass = AUDIO
+			buf[pos + 6] = 0x02;  // bInterfaceSubClass = STREAMING
+			buf[pos + 7] = 0;
+			buf[pos + 8] = 0;
+			pos += 9;
+
+			buf[pos + 0] = 7;     // bLength
+			buf[pos + 1] = 0x05;  // ENDPOINT
+			buf[pos + 2] = 0x04;  // OUT
+			buf[pos + 3] = 0x01;  // isochronous
+			buf[pos + 4] = 0x40;
+			buf[pos + 5] = 0;
+			buf[pos + 6] = 1;
+			pos += 7;
+		}
+
+		UAC1Topology t;
+		CHECK(uac1_parse_config(buf, pos, &t));
+		CHECK_EQ(t.alt_count, UAC1_MAX_ALTS);
+	}
+}
+
 int main(void)
 {
 	load_fixture();
@@ -136,6 +229,7 @@ int main(void)
 	test_resolves_speaker_feature_unit();
 	test_finds_alt_by_format();
 	test_parses_without_config_header();
+	test_survives_hostile_input();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

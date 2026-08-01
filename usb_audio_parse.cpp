@@ -13,6 +13,10 @@
 #define AUDIO_CLASS        0x01
 #define SUBCLASS_CONTROL   0x01
 #define SUBCLASS_STREAM    0x02
+#define EP_DIR_MASK        0x80
+#define EP_DIR_OUT         0x00
+#define EP_XFER_TYPE_MASK  0x03
+#define EP_XFER_ISO        0x01
 
 static bool is_speaker_terminal(uint16_t tt)
 {
@@ -34,7 +38,8 @@ static uint8_t find_output_streaming_interface(const uint8_t *d, size_t len)
 			cur_is_stream = (d[i+5] == AUDIO_CLASS && d[i+6] == SUBCLASS_STREAM);
 			cur = d[i+2];
 		} else if (t == DT_ENDPOINT && l >= 7 && cur_is_stream) {
-			if ((d[i+2] & 0x80) == 0 && (d[i+3] & 0x03) == 0x01) return cur;
+			if ((d[i+2] & EP_DIR_MASK) == EP_DIR_OUT
+			    && (d[i+3] & EP_XFER_TYPE_MASK) == EP_XFER_ISO) return cur;
 		}
 		i += l;
 	}
@@ -80,12 +85,21 @@ bool uac1_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out)
 				uint16_t tt = (uint16_t)b[4] | ((uint16_t)b[5] << 8);
 				if (is_speaker_terminal(tt)) speaker_src = b[7];  // bSourceID
 			} else if (in_control && b[2] == AC_FEATURE_UNIT && l >= 4) {
-				if (fu_count < UAC1_MAX_ALTS) fu_ids[fu_count++] = b[3];
+				// bUnitID 0 is not a valid UAC1 unit/terminal ID (IDs run
+				// 1..255); reject it here so it can never be confused with
+				// the feature_unit_id "not found" sentinel below.
+				if (fu_count < UAC1_MAX_ALTS && b[3] != 0) fu_ids[fu_count++] = b[3];
 			} else if (in_stream && alt && b[2] == AS_FORMAT_TYPE && l >= 11) {
 				alt->channels       = b[4];
 				alt->subframe_size  = b[5];
 				alt->bit_resolution = b[6];
-				if (b[7] >= 1)  // bSamFreqType: discrete frequencies
+				// bSamFreqType == 0 means a continuous min/max range
+				// (tSamFreqMin/tSamFreqMax), which this parser does not
+				// support; sample_rate is left 0 and the alt becomes
+				// unmatchable by uac1_find_alt. bSamFreqType >= 1 gives a
+				// list of tSamFreq[bSamFreqType] discrete frequencies; only
+				// the first, tSamFreq[0], is recorded.
+				if (b[7] >= 1)
 					alt->sample_rate = (uint32_t)b[8]
 					                 | ((uint32_t)b[9] << 8)
 					                 | ((uint32_t)b[10] << 16);
@@ -100,6 +114,9 @@ bool uac1_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out)
 	for (uint8_t k = 0; k < fu_count; k++) {
 		if (fu_ids[k] == speaker_src) { out->feature_unit_id = speaker_src; break; }
 	}
+	// Defensive, not reachable in practice: once find_output_streaming_interface
+	// has located stream_if, the main pass above always records at least one
+	// alt for that interface, so alt_count > 0 here always holds.
 	return out->alt_count > 0;
 }
 

@@ -18,6 +18,10 @@ struct UAC1AltSetting {
 	uint8_t  channels;
 	uint8_t  subframe_size;
 	uint8_t  bit_resolution;
+	// Only the first discrete frequency (tSamFreq[0]) is recorded when a
+	// format descriptor lists several. Devices using a continuous min/max
+	// range (bSamFreqType == 0) are not supported and leave this 0, making
+	// the alt setting unmatchable by uac1_find_alt.
 	uint32_t sample_rate;
 };
 
@@ -27,6 +31,10 @@ struct UAC1Topology {
 	uint8_t  streaming_interface;  // 0xFF if none
 	uint8_t  feature_unit_id;      // 0 if none
 	uint8_t  alt_count;
+	// alts[] holds up to UAC1_MAX_ALTS entries. A device advertising more
+	// alternate settings (or more feature units, tracked internally during
+	// parsing) than that has the excess silently dropped; alt_count == 16
+	// cannot be distinguished from "exactly 16" by the caller.
 	UAC1AltSetting alts[UAC1_MAX_ALTS];
 };
 

@@ -59,10 +59,77 @@ static void test_budget_out(void)
 	CHECK_EQ(sitd_budget_out(192, 0, &s, 0), false);   // null out-param
 }
 
+// Periodic frame list entries: bit 0 = terminate, bits 2:1 = type
+// (0=iTD, 1=QH, 2=siTD, 3=FSTN), address = value & 0xFFFFFFE0.
+#define LINK_TERMINATE 0x01u
+#define LINK_TYPE_ITD  0x00u
+#define LINK_TYPE_QH   0x02u
+#define LINK_TYPE_SITD 0x04u
+
+// --- 64-bit host vs. 32-bit target pointer widths ---
+//
+// sitd_skip_iso() reads a 32-bit hardware link word and follows it by
+// reconstructing a pointer from its address bits (31:5). On the real
+// target, uintptr_t is 32 bits, so those bits *are* the whole address and
+// no reconstruction is needed. On this 64-bit host, a bare 32-bit value
+// cannot hold a full pointer, so sitd_skip_iso() recovers the missing high
+// bits from the pointer it just read *through* (see ehci_iso.cpp), on the
+// assumption that the linked descriptor lives in the same region of
+// address space as the link field pointing at it. That assumption holds
+// unconditionally on target (flat 32-bit address space, no high bits to
+// disagree). To make it hold here too, every node in a chain below --
+// including the "frame_*" variables that stand in for periodic-table
+// entries -- is `static`, so they all land in the process's contiguous
+// BSS region and share the same high 32 bits. Plain stack locals would
+// NOT work: this host's stack lives in a completely different region of
+// the address space than BSS (verified: static addresses here are
+// ~0x1xxxxxxxx while stack addresses are ~0x7ffxxxxxxxxx), so the
+// high-bits splice would silently reconstruct a wild pointer. So this is
+// a real exercise of the reconstruction logic, not a trivial pass.
+static uint32_t frame_a, frame_b, frame_c, frame_d, frame_e;
+static uint32_t sitd_node[8] __attribute__ ((aligned(32)));
+static uint32_t sitd_a[8]    __attribute__ ((aligned(32)));
+static uint32_t sitd_b[8]    __attribute__ ((aligned(32)));
+static uint32_t itd_node[8]  __attribute__ ((aligned(32)));
+
+static void test_skip_iso(void)
+{
+	// A frame whose head is already a queue head: nothing to skip. The
+	// address bits are never dereferenced for a QH entry (the type check
+	// short-circuits first), so they can be left zero.
+	frame_a = LINK_TYPE_QH;
+	CHECK_EQ((void *)sitd_skip_iso(&frame_a), (void *)&frame_a);
+
+	// An empty frame (terminate bit set): nothing to skip.
+	frame_b = LINK_TERMINATE;
+	CHECK_EQ((void *)sitd_skip_iso(&frame_b), (void *)&frame_b);
+
+	// One siTD at the head, then a queue head: must return the address of
+	// the siTD's own next field, which is where the QH chain begins.
+	sitd_node[0] = LINK_TERMINATE;
+	frame_c = ((uint32_t)(uintptr_t)sitd_node) | LINK_TYPE_SITD;
+	CHECK_EQ((void *)sitd_skip_iso(&frame_c), (void *)&sitd_node[0]);
+
+	// Two isochronous descriptors chained, then the QH chain.
+	sitd_b[0] = LINK_TERMINATE;
+	sitd_a[0] = ((uint32_t)(uintptr_t)sitd_b) | LINK_TYPE_SITD;
+	frame_d = ((uint32_t)(uintptr_t)sitd_a) | LINK_TYPE_SITD;
+	CHECK_EQ((void *)sitd_skip_iso(&frame_d), (void *)&sitd_b[0]);
+
+	// An iTD is skipped the same way as an siTD.
+	itd_node[0] = LINK_TERMINATE;
+	frame_e = ((uint32_t)(uintptr_t)itd_node) | LINK_TYPE_ITD;
+	CHECK_EQ((void *)sitd_skip_iso(&frame_e), (void *)&itd_node[0]);
+
+	// Null input must not crash.
+	CHECK_EQ((void *)sitd_skip_iso(0), (void *)0);
+}
+
 int main(void)
 {
 	test_sitd_layout();
 	test_budget_out();
+	test_skip_iso();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

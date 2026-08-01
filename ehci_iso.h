@@ -54,4 +54,18 @@ typedef struct sitd_struct {
 bool sitd_budget_out(uint16_t max_packet, uint8_t start_uframe,
                      uint8_t *smask, uint8_t *cmask);
 
+// Walk past any isochronous descriptors (iTD/siTD) at the head of a periodic
+// frame list entry, and return the address of the link field where the first
+// queue head is, or should be, attached.
+//
+// EHCI requires isochronous descriptors to precede interrupt queue heads
+// within a frame. add_qh_to_periodic_schedule() must therefore start its
+// queue-head traversal after them, or it will read driver fields out of
+// hardware-descriptor memory.
+//
+// Safe because both structures carry their next-link at offset 0: Pipe_struct
+// begins with qh.horizontal_link, sitd_t begins with next. So a link can be
+// followed without knowing which it points at.
+volatile uint32_t *sitd_skip_iso(volatile uint32_t *frame_link);
+
 #endif

@@ -29,3 +29,5 @@ examples/Storage/fatFormatterUSB_TEST/Compile.cmd
 # host test build artifacts
 test/test_uac1_parse
 test/test_uac1_parse.dSYM/
+test/test_sitd
+test/test_sitd.dSYM/

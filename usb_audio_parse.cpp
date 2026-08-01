@@ -14,6 +14,13 @@
 #define SUBCLASS_CONTROL   0x01
 #define SUBCLASS_STREAM    0x02
 
+static bool is_speaker_terminal(uint16_t tt)
+{
+	return tt == 0x0301   // Speaker
+	    || tt == 0x0302   // Headphones
+	    || tt == 0x0402;  // Headset
+}
+
 // Finds the audio streaming interface carrying an isochronous OUT endpoint.
 // Returns 0xFF if there is none.
 static uint8_t find_output_streaming_interface(const uint8_t *d, size_t len)
@@ -47,6 +54,9 @@ bool uac1_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out)
 
 	bool in_control = false, in_stream = false;
 	UAC1AltSetting *alt = 0;
+	uint8_t fu_ids[UAC1_MAX_ALTS];
+	uint8_t fu_count = 0;
+	uint8_t speaker_src = 0;
 	size_t i = 0;
 	while (i + 1 < len && desc[i] >= 2 && i + desc[i] <= len) {
 		const uint8_t *b = desc + i;
@@ -66,6 +76,11 @@ bool uac1_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out)
 		} else if (t == DT_CS_INTERFACE && l >= 3) {
 			if (in_control && b[2] == AC_HEADER && l >= 8) {
 				out->bcd_adc = (uint16_t)b[3] | ((uint16_t)b[4] << 8);
+			} else if (in_control && b[2] == AC_OUTPUT_TERMINAL && l >= 9) {
+				uint16_t tt = (uint16_t)b[4] | ((uint16_t)b[5] << 8);
+				if (is_speaker_terminal(tt)) speaker_src = b[7];  // bSourceID
+			} else if (in_control && b[2] == AC_FEATURE_UNIT && l >= 4) {
+				if (fu_count < UAC1_MAX_ALTS) fu_ids[fu_count++] = b[3];
 			} else if (in_stream && alt && b[2] == AS_FORMAT_TYPE && l >= 11) {
 				alt->channels       = b[4];
 				alt->subframe_size  = b[5];
@@ -81,6 +96,9 @@ bool uac1_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out)
 			alt->max_packet_size     = (uint16_t)b[4] | ((uint16_t)b[5] << 8);
 		}
 		i += l;
+	}
+	for (uint8_t k = 0; k < fu_count; k++) {
+		if (fu_ids[k] == speaker_src) { out->feature_unit_id = speaker_src; break; }
 	}
 	return out->alt_count > 0;
 }

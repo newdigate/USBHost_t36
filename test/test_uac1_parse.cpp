@@ -90,6 +90,15 @@ static void test_collects_alt_settings(void)
 	CHECK_EQ(t.alts[6].max_packet_size, 228);
 }
 
+static void test_resolves_speaker_feature_unit(void)
+{
+	UAC1Topology t;
+	CHECK(uac1_parse_config(fixture, fixture_len, &t));
+	// Output terminal 16 is a Speaker (0x0301) sourced from unit 22.
+	// Units 19 and 35 are microphone feature units and must not be chosen.
+	CHECK_EQ(t.feature_unit_id, 22);
+}
+
 int main(void)
 {
 	load_fixture();
@@ -97,6 +106,7 @@ int main(void)
 	test_rejects_garbage();
 	test_identifies_interfaces();
 	test_collects_alt_settings();
+	test_resolves_speaker_feature_unit();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

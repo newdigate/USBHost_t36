@@ -284,6 +284,8 @@ protected:
                                        void *buf, USBDriver *driver);
     static bool queue_Data_Transfer(Pipe_t *pipe, void *buffer,
                                     uint32_t len, USBDriver *driver);
+    static bool setInterface(Device_t *dev, setup_t &setup, uint8_t interface,
+                             uint8_t alternate, USBDriver *driver);
     static Device_t * new_Device(uint32_t speed, uint32_t hub_addr, uint32_t hub_port);
     static void disconnect_Device(Device_t *dev);
     static void enumeration_transmit(Device_t *dev);

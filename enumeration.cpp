@@ -530,4 +530,18 @@ void USBHost::disconnect_Device(Device_t *dev)
 	}
 }
 
+// USB 2.0 section 9.4.10: SET_INTERFACE
+//   bmRequestType = 0x01 (host-to-device, standard, interface recipient)
+//   bRequest      = 0x0B
+//   wValue        = alternate setting
+//   wIndex        = interface number
+//   wLength       = 0 (no data stage)
+bool USBHost::setInterface(Device_t *dev, setup_t &setup, uint8_t interface,
+                           uint8_t alternate, USBDriver *driver)
+{
+	if (!dev) return false;
+	mk_setup(setup, 0x01, 0x0B, alternate, interface, 0);
+	return queue_Control_Transfer(dev, &setup, NULL, driver);
+}
+
 

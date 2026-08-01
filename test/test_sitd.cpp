@@ -19,9 +19,17 @@ static void test_sitd_layout(void)
 	CHECK_EQ(offsetof(sitd_t, buf0),        16);
 	CHECK_EQ(offsetof(sitd_t, buf1),        20);
 	CHECK_EQ(offsetof(sitd_t, back),        24);
-	// Hardware requires 32-byte alignment; the software tail must not push
-	// the struct past a 32-byte multiple.
+	// Hardware requires each siTD to be 32-byte aligned, and an array of
+	// them to have a 32-byte-multiple stride. aligned(32) gives both; assert
+	// both, because padding the size alone would still leave a pool's base
+	// address unaligned and the failure is silent.
 	CHECK_EQ(sizeof(sitd_t) % 32, 0);
+	CHECK_EQ(alignof(sitd_t), 32);
+
+	// A pool of these must stay aligned end to end.
+	static sitd_t pool[4];
+	CHECK_EQ(((size_t)(void *)pool) % 32, 0);
+	CHECK_EQ((char *)&pool[1] - (char *)&pool[0], (long)sizeof(sitd_t));
 }
 
 static void test_budget_out(void)

@@ -3,7 +3,8 @@
 //
 // USB Audio Class 1.0 descriptor parsing. Deliberately free of Arduino and
 // USBHost_t36 dependencies so it can be unit-tested on the host.
-#pragma once
+#ifndef USB_AUDIO_PARSE_H_
+#define USB_AUDIO_PARSE_H_
 #include <stdint.h>
 #include <stddef.h>
 
@@ -31,7 +32,11 @@ struct UAC1Topology {
 
 // Parses a full configuration descriptor. Returns false if the descriptor
 // contains no audio streaming interface with an isochronous OUT endpoint.
+// On failure the contents of *out are unspecified and callers must not
+// read it.
 bool uac1_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out);
 
 // Returns the alternate setting number matching the format, or -1.
 int uac1_find_alt(const UAC1Topology *t, uint32_t rate, uint8_t channels, uint8_t bits);
+
+#endif // USB_AUDIO_PARSE_H_

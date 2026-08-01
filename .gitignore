@@ -25,3 +25,7 @@ examples/Storage/fatFormatterUSB_TEST/Compile.cmd
 
 # Saleae analyzer exports -- routinely 100 MB+, keep them out of the tree
 *.csv
+
+# host test build artifacts
+test/test_uac1_parse
+test/test_uac1_parse.dSYM/

@@ -3,9 +3,9 @@
 #include "usb_audio_parse.h"
 #include <string.h>
 
-bool uac1_parse_config(const uint8_t *d, size_t len, UAC1Topology *out)
+bool uac1_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out)
 {
-	(void)d; (void)len; (void)out;
+	(void)desc; (void)len; (void)out;
 	return false;
 }
 

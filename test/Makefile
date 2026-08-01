@@ -10,6 +10,6 @@ run: test_uac1_parse
 	./test_uac1_parse
 
 clean:
-	rm -f test_uac1_parse
+	rm -rf test_uac1_parse test_uac1_parse.dSYM
 
 .PHONY: all run clean

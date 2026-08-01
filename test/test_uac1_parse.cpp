@@ -3,6 +3,8 @@
 #include "usb_audio_parse.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
+#include <string.h>
 
 static int failures = 0;
 static int checks = 0;
@@ -10,19 +12,30 @@ static int checks = 0;
 #define CHECK(cond) do { checks++; if (!(cond)) { \
 	printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); failures++; } } while (0)
 
-#define CHECK_EQ(a, b) do { checks++; long _a = (long)(a), _b = (long)(b); \
-	if (_a != _b) { printf("FAIL %s:%d: %s == %s (got %ld, want %ld)\n", \
-	__FILE__, __LINE__, #a, #b, _a, _b); failures++; } } while (0)
+// Both operands are cast to long, so this is only suitable for values that
+// fit in a long -- not pointers or 64-bit-wide fields.
+#define CHECK_EQ(a, b) do { checks++; long _ck_a = (long)(a), _ck_b = (long)(b); \
+	if (_ck_a != _ck_b) { printf("FAIL %s:%d: %s == %s (got %ld, want %ld)\n", \
+	__FILE__, __LINE__, #a, #b, _ck_a, _ck_b); failures++; } } while (0)
 
 static uint8_t fixture[4096];
 static size_t fixture_len;
 
 static void load_fixture(void)
 {
-	FILE *f = fopen("fixtures/headset_uac1_config.bin", "rb");
-	if (!f) { printf("FAIL cannot open fixture\n"); exit(1); }
+	const char *path = "fixtures/headset_uac1_config.bin";
+	FILE *f = fopen(path, "rb");
+	if (!f) {
+		printf("FAIL cannot open fixture %s: %s\n", path, strerror(errno));
+		exit(1);
+	}
 	fixture_len = fread(fixture, 1, sizeof(fixture), f);
 	fclose(f);
+	if (fixture_len == sizeof(fixture)) {
+		printf("FAIL fixture %s may have been truncated (hit %zu byte buffer limit)\n",
+			path, sizeof(fixture));
+		exit(1);
+	}
 }
 
 static void test_fixture_is_a_config_descriptor(void)

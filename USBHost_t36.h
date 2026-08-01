@@ -286,6 +286,11 @@ protected:
                                     uint32_t len, USBDriver *driver);
     static bool setInterface(Device_t *dev, setup_t &setup, uint8_t interface,
                              uint8_t alternate, USBDriver *driver);
+    // Periodic frame list access for isochronous drivers. The list itself is
+    // private to ehci.cpp; these hand out one slot and the current frame so a
+    // driver can schedule siTDs without the table becoming shared state.
+    static volatile uint32_t * periodic_frame_slot(uint32_t frame);
+    static uint32_t periodic_current_frame(void);
     static Device_t * new_Device(uint32_t speed, uint32_t hub_addr, uint32_t hub_port);
     static void disconnect_Device(Device_t *dev);
     static void enumeration_transmit(Device_t *dev);

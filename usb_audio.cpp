@@ -5,6 +5,7 @@
 
 void USBAudioOut::init()
 {
+	sitd_pool_init();
 	contribute_Transfers(mytransfers, sizeof(mytransfers)/sizeof(Transfer_t));
 	driver_ready_for_device(this);
 }
@@ -52,4 +53,56 @@ void USBAudioOut::disconnect()
 	active_alt = -1;
 	pending_alt = -1;
 	memset(&topo, 0, sizeof(topo));
+}
+
+void USBAudioOut::fillTestBuffer(uint8_t value)
+{
+	for (unsigned i = 0; i < sizeof(test_buf); i++) test_buf[i] = value;
+}
+
+// Post one isochronous OUT packet. Deliberately single-shot: this is the step
+// that proves the siTD path works at all, before any ring exists.
+bool USBAudioOut::postTestPacket(uint16_t len)
+{
+	if (active_alt < 0 || !device) return false;
+	if (len == 0 || len > sizeof(test_buf)) return false;
+
+	// Find the alternate setting we activated, for its endpoint address.
+	const UAC1AltSetting *alt = 0;
+	for (uint8_t i = 0; i < topo.alt_count; i++) {
+		if (topo.alts[i].alternate_setting == (uint8_t)active_alt) {
+			alt = &topo.alts[i];
+			break;
+		}
+	}
+	if (!alt || alt->endpoint_address == 0) return false;
+
+	if (!test_sitd) {
+		test_sitd = sitd_alloc();
+		if (!test_sitd) return false;
+	}
+
+	// hub_addr and port are 0: the device is attached directly to the root
+	// port, so the root hub is the split target (RM Table 62-56).
+	if (!sitd_fill_out(test_sitd, device->address,
+	                   alt->endpoint_address & 0x0F,
+	                   0, 0, test_buf, len, 0, true)) {
+		return false;
+	}
+	test_len = len;
+
+	// Schedule far enough ahead that the controller has not already walked
+	// this frame. Two frames is comfortable at a 1 ms frame time.
+	// periodic_frame_slot() masks into range, so no wrap handling here --
+	// the frame list size is private to ehci.cpp and should stay that way.
+	uint32_t frame = periodic_current_frame() + 2;
+	sitd_link(periodic_frame_slot(frame), test_sitd, (uint16_t)frame);
+	return true;
+}
+
+bool USBAudioOut::testPacketStatus(sitd_status_t *out) const
+{
+	if (!out || !test_sitd) return false;
+	sitd_get_status(test_sitd, out);
+	return true;
 }

@@ -164,3 +164,70 @@ bool sitd_unlink(volatile uint32_t *frame_slot, sitd_t *node)
 	}
 	return false;
 }
+
+// siTD status/result field bits, EHCI 1.0 Table 3-11.
+#define SITD_STATUS_ERR_XACT   0x02u   // transaction error
+#define SITD_STATUS_ERR_BABBLE 0x10u
+#define SITD_STATUS_ERR_BUFFER 0x20u
+#define SITD_TP_SHIFT          3u
+#define SITD_TCOUNT_SHIFT      0u
+#define SITD_TP_ALL            0u      // whole payload in one start-split
+#define SITD_TP_BEGIN          1u      // first of several; HC sequences Mid/End
+
+bool sitd_fill_out(sitd_t *node, uint8_t dev_addr, uint8_t endpoint,
+                   uint8_t hub_addr, uint8_t port, const void *buf,
+                   uint16_t len, uint8_t start_uframe, bool ioc)
+{
+	if (!node || !buf) return false;
+
+	uint8_t smask = 0, cmask = 0;
+	if (!sitd_budget_out(len, start_uframe, &smask, &cmask)) return false;
+
+	uint32_t addr = (uint32_t)(uintptr_t)buf;
+
+	// Direction 0 = OUT. hub_addr/port are 0 for a device on the root port.
+	node->ep_char = ((uint32_t)0u << SITD_DIRECTION_SHIFT)
+	              | ((uint32_t)port     << SITD_PORT_SHIFT)
+	              | ((uint32_t)hub_addr << SITD_HUB_ADDR_SHIFT)
+	              | ((uint32_t)endpoint << SITD_ENDPT_SHIFT)
+	              | ((uint32_t)dev_addr << SITD_DEV_ADDR_SHIFT);
+
+	node->uframe_mask = ((uint32_t)cmask << SITD_CMASK_SHIFT)
+	                  | ((uint32_t)smask << SITD_SMASK_SHIFT);
+
+	node->status = ((uint32_t)len << SITD_TOTAL_BYTES_SHIFT)
+	             | SITD_STATUS_ACTIVE
+	             | (ioc ? (1uL << SITD_IOC_SHIFT) : 0u);
+
+	node->buf0 = addr;
+
+	// Buffer pointer 1 holds the NEXT 4K page (a payload may straddle one
+	// boundary) plus the split bookkeeping. T-count is the number of OUT
+	// start-splits at 188 bytes each; TP seeds the Begin/Mid/End sequence
+	// the controller then walks, or says All when one split suffices.
+	uint32_t tcount = ((uint32_t)len + FS_BYTES_PER_UFRAME - 1u) / FS_BYTES_PER_UFRAME;
+	uint32_t tp = (tcount > 1u) ? SITD_TP_BEGIN : SITD_TP_ALL;
+	node->buf1 = ((addr + 4096u) & 0xFFFFF000u)
+	           | (tp << SITD_TP_SHIFT)
+	           | (tcount << SITD_TCOUNT_SHIFT);
+
+	node->back = LINK_TERMINATE;
+	return true;
+}
+
+void sitd_get_status(const sitd_t *node, sitd_status_t *out)
+{
+	if (!out) return;
+	if (!node) {
+		out->active = false;
+		out->err_transaction = out->err_babble = out->err_buffer = false;
+		out->bytes_left = 0;
+		return;
+	}
+	uint32_t s = node->status;
+	out->active          = (s & SITD_STATUS_ACTIVE) != 0u;
+	out->err_transaction = (s & SITD_STATUS_ERR_XACT) != 0u;
+	out->err_babble      = (s & SITD_STATUS_ERR_BABBLE) != 0u;
+	out->err_buffer      = (s & SITD_STATUS_ERR_BUFFER) != 0u;
+	out->bytes_left      = (uint16_t)((s >> SITD_TOTAL_BYTES_SHIFT) & 0x3FFu);
+}

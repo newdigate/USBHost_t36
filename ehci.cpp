@@ -1536,3 +1536,21 @@ void USBHost::delete_Pipe(Pipe_t *pipe)
 }
 
 
+
+// Periodic frame list access for isochronous drivers.
+//
+// periodictable is static to this file so nothing can wander into it; these
+// hand out exactly one slot, masked into range, and the frame the controller
+// is currently working on. A driver schedules an siTD a few frames ahead of
+// periodic_current_frame() so the hardware has not passed it yet.
+volatile uint32_t * USBHost::periodic_frame_slot(uint32_t frame)
+{
+	return &periodictable[frame & (PERIODIC_LIST_SIZE - 1)];
+}
+
+uint32_t USBHost::periodic_current_frame(void)
+{
+	// FRINDEX counts microframes; bits 2:0 are the microframe within the
+	// frame, so the frame index is the register shifted right by 3.
+	return (USBHS_FRINDEX >> 3) & (PERIODIC_LIST_SIZE - 1);
+}

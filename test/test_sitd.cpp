@@ -213,6 +213,73 @@ static void test_link_unlink(void)
 	CHECK_EQ(sitd_unlink(&slot, NULL), false);
 }
 
+static uint32_t fill_buf[64] __attribute__ ((aligned(32)));
+
+static void test_fill_out(void)
+{
+	sitd_pool_init();
+	sitd_t *n = sitd_alloc();
+	CHECK_EQ(n != NULL, true);
+
+	// 192 bytes at 48 kHz to endpoint 4 on device 3, directly attached
+	// (hub 0, port 0), starting at microframe 0, interrupt on complete.
+	CHECK_EQ(sitd_fill_out(n, 3, 4, 0, 0, fill_buf, 192, 0, true), true);
+
+	// Endpoint characteristics: OUT (bit 31 clear), port 0, hub 0, ep 4, addr 3.
+	CHECK_EQ(n->ep_char >> 31, 0);                    // direction OUT
+	CHECK_EQ((n->ep_char >> 8) & 0x0F, 4);            // endpoint
+	CHECK_EQ(n->ep_char & 0x7F, 3);                   // device address
+	CHECK_EQ((n->ep_char >> 16) & 0x7F, 0);           // hub addr, root port
+	CHECK_EQ((n->ep_char >> 24) & 0x7F, 0);           // port
+
+	// 192 bytes spans two microframes, so S-mask covers uframes 0 and 1 and
+	// C-mask is zero -- an isochronous OUT takes no complete-splits.
+	CHECK_EQ(n->uframe_mask & 0xFF, 0x03);
+	CHECK_EQ((n->uframe_mask >> 8) & 0xFF, 0x00);
+
+	// Status: active, 192 bytes to transfer, IOC set.
+	CHECK_EQ(n->status & 0x80, 0x80);                 // Active
+	CHECK_EQ((n->status >> 16) & 0x3FF, 192);         // bytes to transfer
+	CHECK_EQ(n->status >> 31, 1);                     // IOC
+
+	// Buffer pointers: buf0 is the payload, buf1 is the NEXT 4K page plus
+	// the split bookkeeping. 192 bytes needs two start-splits, so T-count 2
+	// and TP=Begin(1) to seed the Begin/Mid/End sequence.
+	CHECK_EQ(n->buf0, (uint32_t)(uintptr_t)fill_buf);
+	CHECK_EQ(n->buf1 & 0xFFFFF000u,
+	         (((uint32_t)(uintptr_t)fill_buf) + 4096u) & 0xFFFFF000u);
+	CHECK_EQ(n->buf1 & 0x07, 2);                      // T-count
+	CHECK_EQ((n->buf1 >> 3) & 0x03, 1);               // TP = Begin
+
+	CHECK_EQ(n->back, 1);                             // back pointer terminated
+
+	// A 180-byte packet fits one start-split: T-count 1, TP = All(0).
+	CHECK_EQ(sitd_fill_out(n, 3, 4, 0, 0, fill_buf, 180, 0, false), true);
+	CHECK_EQ(n->buf1 & 0x07, 1);
+	CHECK_EQ((n->buf1 >> 3) & 0x03, 0);
+	CHECK_EQ(n->status >> 31, 0);                     // IOC not requested
+
+	// Rejections leave the descriptor alone rather than half-built.
+	CHECK_EQ(sitd_fill_out(n, 3, 4, 0, 0, fill_buf, 1024, 0, true), false);
+	CHECK_EQ(sitd_fill_out(n, 3, 4, 0, 0, NULL, 192, 0, true), false);
+	CHECK_EQ(sitd_fill_out(NULL, 3, 4, 0, 0, fill_buf, 192, 0, true), false);
+
+	// Status readback of a freshly filled, not-yet-run descriptor.
+	sitd_status_t st;
+	CHECK_EQ(sitd_fill_out(n, 3, 4, 0, 0, fill_buf, 192, 0, true), true);
+	sitd_get_status(n, &st);
+	CHECK_EQ(st.active, true);
+	CHECK_EQ(st.bytes_left, 192);
+	CHECK_EQ(st.err_transaction || st.err_babble || st.err_buffer, false);
+
+	// Simulate the controller completing it: Active cleared, count drained.
+	n->status &= ~0x80u;
+	n->status &= ~(0x3FFu << 16);
+	sitd_get_status(n, &st);
+	CHECK_EQ(st.active, false);
+	CHECK_EQ(st.bytes_left, 0);
+}
+
 int main(void)
 {
 	test_sitd_layout();
@@ -220,6 +287,7 @@ int main(void)
 	test_skip_iso();
 	test_sitd_pool();
 	test_link_unlink();
+	test_fill_out();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

@@ -86,6 +86,34 @@ void sitd_free(sitd_t *node);
 //
 // Whatever the slot pointed at becomes this siTD's next link, so interrupt
 // queue heads already scheduled in this frame stay reachable.
+// Fill an siTD for one full-speed isochronous OUT transaction.
+//
+// `hub_addr`/`port` identify the transaction translator. For a device attached
+// directly to the root port both are 0 -- RM Table 62-56: "directly attached
+// [where HubAddr = 0 and HubAddr is the address of the Root Hub where the bus
+// transitions from HS to FS/LS]".
+//
+// `buf` must be DMA-reachable (USBHOST_DMAMEM on RT1176) and is not copied.
+// Returns false if the transfer cannot be scheduled, in which case the siTD is
+// left inactive rather than half-built.
+bool sitd_fill_out(sitd_t *node, uint8_t dev_addr, uint8_t endpoint,
+                   uint8_t hub_addr, uint8_t port, const void *buf,
+                   uint16_t len, uint8_t start_uframe, bool ioc);
+
+// Completion status, read back from the descriptor after the controller has
+// processed it. `active` false with no error flags and bytes_left 0 means the
+// packet went out. This is the primary verification path: the controller
+// reporting what it did beats inferring it from a logic capture.
+typedef struct {
+	bool     active;        // still queued -- hardware has not run it yet
+	bool     err_transaction;
+	bool     err_babble;
+	bool     err_buffer;
+	uint16_t bytes_left;    // bytes-to-transfer remaining; 0 means all sent
+} sitd_status_t;
+
+void sitd_get_status(const sitd_t *node, sitd_status_t *out);
+
 void sitd_link(volatile uint32_t *frame_slot, sitd_t *node, uint16_t frame);
 
 // Remove an siTD from a frame slot's list. Returns true if it was found and

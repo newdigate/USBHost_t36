@@ -5,6 +5,7 @@
 #include "USBHost_t36.h"
 #include "usb_audio_parse.h"
 #include "ehci_iso.h"
+#include "usb_audio_fifo.h"
 
 class USBAudioOut : public USBDriver {
 public:
@@ -42,8 +43,23 @@ public:
     uint32_t packetsSent() const { return packets_sent; }
     uint32_t underruns() const { return underrun_count; }
 
-    // Test tone instead of real audio, so streaming can be proven audible
-    // before any Audio library integration exists. 0 disables (silence).
+    // --- audio source ---
+    //
+    // Push interleaved samples (L,R,L,R...). Returns how many were accepted;
+    // fewer than asked means the FIFO is full, and the caller decides whether
+    // to drop or retry. This is the seam the Audio library adapter writes to.
+    uint32_t write(const int16_t *samples, uint32_t count);
+    uint32_t available() const;          // free space, in samples
+
+    // Called once per USB frame consumed, from service(). The Audio library
+    // adapter uses this to run the graph, which makes the USB frame clock the
+    // master -- see the design spec section 8.
+    void onFrameConsumed(void (*cb)(void)) { frame_cb = cb; }
+
+    // Built-in test tone. It is a *producer into the same FIFO*, not a
+    // separate path: keeping one route to the wire means a genuine underrun
+    // shows up as silence and an underrun count, instead of being masked by
+    // falling back to generated audio. 0 disables.
     void tone(uint32_t hz) { tone_hz = hz; }
 
     // Completion status written back by the controller. Valid a frame or two
@@ -103,6 +119,10 @@ private:
     uint32_t frame_accum    = 0;   // fractional samples-per-frame carry
 
     void fillFrame(uint8_t *dst, uint16_t bytes);
+    void topUpFromTone();
+
+    usb_audio_fifo_t fifo;
+    void (*frame_cb)(void) = 0;
 };
 
 #endif // USB_AUDIO_H_

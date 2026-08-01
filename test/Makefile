@@ -9,11 +9,15 @@ test_uac1_parse: test_uac1_parse.cpp ../usb_audio_parse.cpp ../usb_audio_parse.h
 test_sitd: test_sitd.cpp ../ehci_iso.cpp ../ehci_iso.h
 	$(CXX) $(CXXFLAGS) -o $@ test_sitd.cpp ../ehci_iso.cpp
 
-run: test_uac1_parse test_sitd
+run: test_uac1_parse test_sitd test_fifo
 	./test_uac1_parse
 	./test_sitd
+	./test_fifo
+
+test_fifo: test_fifo.cpp ../usb_audio_fifo.cpp ../usb_audio_fifo.h
+	$(CXX) $(CXXFLAGS) -o $@ test_fifo.cpp ../usb_audio_fifo.cpp
 
 clean:
-	rm -rf test_uac1_parse test_uac1_parse.dSYM test_sitd test_sitd.dSYM
+	rm -rf test_fifo test_fifo.dSYM test_uac1_parse test_uac1_parse.dSYM test_sitd test_sitd.dSYM
 
 .PHONY: all run clean

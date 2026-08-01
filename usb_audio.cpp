@@ -111,32 +111,50 @@ bool USBAudioOut::testPacketStatus(sitd_status_t *out) const
 // otherwise. 48 samples of stereo 16-bit little-endian = 192 bytes.
 void USBAudioOut::fillFrame(uint8_t *dst, uint16_t bytes)
 {
-	const uint32_t samples = bytes / 4;   // stereo, 2 bytes per channel
+	const uint32_t want = bytes / 2;      // int16 samples across both channels
 
-	if (tone_hz == 0) {
-		for (uint32_t i = 0; i < bytes; i++) dst[i] = 0;
-		underrun_count++;      // silence is an underrun as far as audio goes
-		return;
-	}
+	// One route to the wire: whatever is in the FIFO. A short read takes
+	// nothing -- a partial frame would shift every later sample and the
+	// device has no way to resync -- so an underrun is a full frame of
+	// silence plus a counter bump. Visible, rather than papered over.
+	if (usb_audio_fifo_read(&fifo, (int16_t *)dst, want)) return;
 
-	// Fixed-point phase: 32-bit accumulator wrapping once per cycle. The
-	// increment is (hz << 32) / rate, computed in 64-bit to keep precision.
+	for (uint32_t i = 0; i < bytes; i++) dst[i] = 0;
+	underrun_count++;
+}
+
+// Test-tone producer. Feeds the same FIFO an external writer would, so what
+// gets exercised is the real streaming path rather than a parallel one.
+void USBAudioOut::topUpFromTone()
+{
+	if (tone_hz == 0) return;
+
 	uint32_t inc = (uint32_t)(((uint64_t)tone_hz << 32) / req_rate);
 
-	for (uint32_t i = 0; i < samples; i++) {
-		// Cheap triangle from the top phase bits, then folded to a crude
-		// sine-ish shape. Good enough to hear and to see on a scope; the
-		// real generator is the Audio library's job.
-		int32_t tri = (int32_t)(tone_phase >> 16) - 32768;   // -32768..32767
-		if (tri < 0) tri = -tri;                              // 0..32768
-		int16_t s = (int16_t)((tri - 16384) * 3 / 2);         // centre, scale
-		tone_phase += inc;
-
-		dst[i * 4 + 0] = (uint8_t)(s & 0xFF);
-		dst[i * 4 + 1] = (uint8_t)(s >> 8);
-		dst[i * 4 + 2] = (uint8_t)(s & 0xFF);
-		dst[i * 4 + 3] = (uint8_t)(s >> 8);
+	while (usb_audio_fifo_free(&fifo) >= 256) {
+		int16_t chunk[128];
+		for (uint32_t i = 0; i < 128; i += 2) {
+			// Cheap triangle: audible, and obviously wrong if the rate
+			// handling breaks. The real generator is the Audio library.
+			int32_t tri = (int32_t)(tone_phase >> 16) - 32768;
+			if (tri < 0) tri = -tri;
+			int16_t v = (int16_t)((tri - 16384) * 3 / 2);
+			tone_phase += inc;
+			chunk[i]     = v;      // left
+			chunk[i + 1] = v;      // right
+		}
+		if (usb_audio_fifo_write(&fifo, chunk, 128) == 0) break;
 	}
+}
+
+uint32_t USBAudioOut::write(const int16_t *samples, uint32_t count)
+{
+	return usb_audio_fifo_write(&fifo, samples, count);
+}
+
+uint32_t USBAudioOut::available() const
+{
+	return usb_audio_fifo_free(&fifo);
 }
 
 bool USBAudioOut::beginStreaming()
@@ -175,6 +193,8 @@ bool USBAudioOut::beginStreaming()
 	}
 
 	frame_accum = 0;
+	usb_audio_fifo_reset(&fifo);
+	topUpFromTone();
 	for (uint32_t i = 0; i < RING_SLOTS; i++) {
 		uint16_t bytes = uac1_frame_bytes(&frame_accum, req_rate,
 		                                  req_channels, req_bits / 8);
@@ -220,6 +240,8 @@ void USBAudioOut::service()
 {
 	if (!is_streaming) return;
 
+	topUpFromTone();
+
 	for (uint32_t i = 0; i < RING_SLOTS; i++) {
 		sitd_t *s = ring[i];
 		if (!s) continue;
@@ -238,6 +260,10 @@ void USBAudioOut::service()
 		if (sitd_fill_out(s, device->address, iso_endpoint, 0, 0,
 		                  ring_buf[i], bytes, 0, false)) {
 			packets_sent++;
+			// The USB frame clock is the master: this is what lets the
+			// Audio library adapter run its graph at the bus rate rather
+			// than a free-running one (design spec section 8).
+			if (frame_cb) frame_cb();
 		}
 	}
 }

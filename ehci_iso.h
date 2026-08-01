@@ -77,4 +77,20 @@ void sitd_pool_init(void);
 sitd_t *sitd_alloc(void);
 void sitd_free(sitd_t *node);
 
+// Link an siTD into one periodic frame list slot, at the head of that frame's
+// list. `frame_slot` is &periodictable[frame]; the caller owns the table.
+//
+// Head insertion is not a convenience -- EHCI requires isochronous descriptors
+// to precede interrupt queue heads within a frame, and sitd_skip_iso() (and
+// therefore add_qh_to_periodic_schedule) depends on that ordering holding.
+//
+// Whatever the slot pointed at becomes this siTD's next link, so interrupt
+// queue heads already scheduled in this frame stay reachable.
+void sitd_link(volatile uint32_t *frame_slot, sitd_t *node, uint16_t frame);
+
+// Remove an siTD from a frame slot's list. Returns true if it was found and
+// unlinked. Walks only the isochronous run at the head, since that is the
+// only place an siTD can legally be.
+bool sitd_unlink(volatile uint32_t *frame_slot, sitd_t *node);
+
 #endif

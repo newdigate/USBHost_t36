@@ -36,6 +36,7 @@ bool sitd_budget_out(uint16_t max_packet, uint8_t start_uframe,
 #define LINK_TERMINATE 0x01u
 #define LINK_TYPE_MASK 0x06u
 #define LINK_TYPE_QH   0x02u
+#define LINK_TYPE_SITD 0x04u
 #define LINK_ADDR_MASK 0xFFFFFFE0u
 
 // Pool size, also the bound on how many isochronous descriptors one frame
@@ -122,4 +123,44 @@ void sitd_free(sitd_t *node)
 	if (!node) return;
 	node->next_free = sitd_free_list;
 	sitd_free_list = node;
+}
+
+void sitd_link(volatile uint32_t *frame_slot, sitd_t *node, uint16_t frame)
+{
+	if (!frame_slot || !node) return;
+
+	// Whatever was at the head becomes our next link, so any interrupt queue
+	// heads already scheduled in this frame stay reachable behind us.
+	node->next = *frame_slot;
+	node->frame = frame;
+
+	// The address must be 32-byte aligned for the type bits to be free; the
+	// pool guarantees that (aligned(32) on sitd_t and on the pool array).
+	*frame_slot = ((uint32_t)(uintptr_t)node & LINK_ADDR_MASK) | LINK_TYPE_SITD;
+}
+
+bool sitd_unlink(volatile uint32_t *frame_slot, sitd_t *node)
+{
+	if (!frame_slot || !node) return false;
+
+	uint32_t target = ((uint32_t)(uintptr_t)node & LINK_ADDR_MASK) | LINK_TYPE_SITD;
+	volatile uint32_t *link = frame_slot;
+
+	// Bounded for the same reason sitd_skip_iso is: this runs in interrupt
+	// context and must degrade rather than hang on a corrupt list.
+	for (unsigned guard = 0; guard <= SITD_POOL_SIZE; guard++) {
+		uint32_t cur = *link;
+		if (cur & LINK_TERMINATE) return false;
+		if ((cur & LINK_TYPE_MASK) == LINK_TYPE_QH) return false;  // past the iso run
+
+		if ((cur & (LINK_ADDR_MASK | LINK_TYPE_MASK)) == target) {
+			*link = node->next;      // splice it out
+			node->next = LINK_TERMINATE;
+			return true;
+		}
+
+		uintptr_t same_region = (uintptr_t)link & ~(uintptr_t)0xFFFFFFFFu;
+		link = (volatile uint32_t *)(same_region | (uintptr_t)(cur & LINK_ADDR_MASK));
+	}
+	return false;
 }

@@ -93,6 +93,7 @@ static uint32_t sitd_b[8]    __attribute__ ((aligned(32)));
 static uint32_t itd_node[8]  __attribute__ ((aligned(32)));
 static uint32_t frame_f;
 static uint32_t cyc[8]       __attribute__ ((aligned(32)));
+static uint32_t slot;
 
 static void test_skip_iso(void)
 {
@@ -166,12 +167,59 @@ static void test_sitd_pool(void)
 	CHECK_EQ((void *)sitd_alloc(), (void *)0);   // exhausted again
 }
 
+static void test_link_unlink(void)
+{
+	sitd_pool_init();
+	sitd_t *a = sitd_alloc();
+	sitd_t *b = sitd_alloc();
+	CHECK_EQ(a != NULL && b != NULL, true);
+
+	// An empty frame slot. Linking must put the siTD at the head and carry
+	// the previous contents into its next link.
+	slot = LINK_TERMINATE;
+	sitd_link(&slot, a, 3);
+	CHECK_EQ((slot & 0x06u), LINK_TYPE_SITD);
+	CHECK_EQ((slot & 0xFFFFFFE0u), (uint32_t)(uintptr_t)a & 0xFFFFFFE0u);
+	CHECK_EQ(a->next, LINK_TERMINATE);
+	CHECK_EQ(a->frame, 3);
+
+	// A second siTD goes in front of the first, and the first stays reachable.
+	sitd_link(&slot, b, 3);
+	CHECK_EQ((slot & 0xFFFFFFE0u), (uint32_t)(uintptr_t)b & 0xFFFFFFE0u);
+	CHECK_EQ((b->next & 0xFFFFFFE0u), (uint32_t)(uintptr_t)a & 0xFFFFFFE0u);
+
+	// skip_iso must walk past both and land on a's next field, which is
+	// where a queue head would attach.
+	CHECK_EQ((void *)sitd_skip_iso(&slot), (void *)&a->next);
+
+	// Unlink the tail: b stays at the head, its next becomes terminate.
+	CHECK_EQ(sitd_unlink(&slot, a), true);
+	CHECK_EQ((slot & 0xFFFFFFE0u), (uint32_t)(uintptr_t)b & 0xFFFFFFE0u);
+	CHECK_EQ(b->next, LINK_TERMINATE);
+
+	// Unlink the head: the slot returns to what it was.
+	CHECK_EQ(sitd_unlink(&slot, b), true);
+	CHECK_EQ(slot, LINK_TERMINATE);
+
+	// Unlinking something absent reports failure rather than corrupting.
+	CHECK_EQ(sitd_unlink(&slot, a), false);
+	CHECK_EQ(slot, LINK_TERMINATE);
+
+	// Null arguments are ignored, not dereferenced.
+	sitd_link(NULL, a, 0);
+	sitd_link(&slot, NULL, 0);
+	CHECK_EQ(slot, LINK_TERMINATE);
+	CHECK_EQ(sitd_unlink(NULL, a), false);
+	CHECK_EQ(sitd_unlink(&slot, NULL), false);
+}
+
 int main(void)
 {
 	test_sitd_layout();
 	test_budget_out();
 	test_skip_iso();
 	test_sitd_pool();
+	test_link_unlink();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

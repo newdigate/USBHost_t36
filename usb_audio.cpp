@@ -5,6 +5,7 @@
 
 void USBAudioOut::init()
 {
+	contribute_Transfers(mytransfers, sizeof(mytransfers)/sizeof(Transfer_t));
 	driver_ready_for_device(this);
 }
 
@@ -34,7 +35,8 @@ bool USBAudioOut::claim(Device_t *dev, int type, const uint8_t *descriptors, uin
 	// return true.
 	active_alt = -1;         // becomes valid once SET_INTERFACE completes
 	pending_alt = alt;
-	USBHost::setInterface(dev, setup, topo.streaming_interface, (uint8_t)alt, this);
+	if (!USBHost::setInterface(dev, setup, topo.streaming_interface, (uint8_t)alt, this))
+		return false;
 	return true;
 }
 

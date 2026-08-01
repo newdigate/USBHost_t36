@@ -109,12 +109,12 @@ bool USBAudioOut::testPacketStatus(sitd_status_t *out) const
 
 // Generate one frame of payload. A sine when a tone is requested, silence
 // otherwise. 48 samples of stereo 16-bit little-endian = 192 bytes.
-void USBAudioOut::fillFrame(uint8_t *dst)
+void USBAudioOut::fillFrame(uint8_t *dst, uint16_t bytes)
 {
-	const uint32_t samples = FRAME_BYTES / 4;   // stereo, 2 bytes per channel
+	const uint32_t samples = bytes / 4;   // stereo, 2 bytes per channel
 
 	if (tone_hz == 0) {
-		for (uint32_t i = 0; i < FRAME_BYTES; i++) dst[i] = 0;
+		for (uint32_t i = 0; i < bytes; i++) dst[i] = 0;
 		underrun_count++;      // silence is an underrun as far as audio goes
 		return;
 	}
@@ -174,13 +174,17 @@ bool USBAudioOut::beginStreaming()
 		}
 	}
 
+	frame_accum = 0;
 	for (uint32_t i = 0; i < RING_SLOTS; i++) {
-		fillFrame(ring_buf[i]);
+		uint16_t bytes = uac1_frame_bytes(&frame_accum, req_rate,
+		                                  req_channels, req_bits / 8);
+		if (bytes == 0 || bytes > MAX_FRAME_BYTES) { stopStreaming(); return false; }
+		fillFrame(ring_buf[i], bytes);
 		// ioc=false: service() polls the status word, so interrupt-on-
 		// complete would only add ~1000 IRQ/s into an ISR with no siTD
 		// handling.
 		if (!sitd_fill_out(ring[i], device->address, iso_endpoint, 0, 0,
-		                   ring_buf[i], FRAME_BYTES, 0, false)) {
+		                   ring_buf[i], bytes, 0, false)) {
 			stopStreaming();
 			return false;
 		}
@@ -224,9 +228,15 @@ void USBAudioOut::service()
 		sitd_get_status(s, &st);
 		if (st.active) continue;             // hardware has not run it yet
 
-		fillFrame(ring_buf[i]);
+		// Packet size is not constant at every rate: 44.1 kHz needs 44
+		// samples nine frames out of ten and 45 on the tenth, or the
+		// stream drifts against the device's clock.
+		uint16_t bytes = uac1_frame_bytes(&frame_accum, req_rate,
+		                                  req_channels, req_bits / 8);
+		if (bytes == 0 || bytes > MAX_FRAME_BYTES) continue;
+		fillFrame(ring_buf[i], bytes);
 		if (sitd_fill_out(s, device->address, iso_endpoint, 0, 0,
-		                  ring_buf[i], FRAME_BYTES, 0, false)) {
+		                  ring_buf[i], bytes, 0, false)) {
 			packets_sent++;
 		}
 	}

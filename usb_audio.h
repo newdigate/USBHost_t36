@@ -88,17 +88,21 @@ private:
     // Streaming ring: one siTD and one payload buffer per periodic slot.
     // 192 bytes = 48 samples of 48 kHz stereo 16-bit = exactly one frame.
     static const uint32_t RING_SLOTS = 32;
-    static const uint16_t FRAME_BYTES = 192;
+    // Sized for the largest frame any supported rate needs. 48 kHz stereo
+    // 16-bit is a constant 192; 44.1 kHz alternates 176/180. The headroom
+    // covers a device advertising a larger wMaxPacketSize.
+    static const uint16_t MAX_FRAME_BYTES = 256;
     sitd_t  *ring[RING_SLOTS] = {};
-    uint8_t  ring_buf[RING_SLOTS][FRAME_BYTES];
+    uint8_t  ring_buf[RING_SLOTS][MAX_FRAME_BYTES];
     bool     is_streaming   = false;
     uint32_t packets_sent   = 0;
     uint32_t underrun_count = 0;
     uint32_t tone_hz        = 0;
     uint32_t tone_phase     = 0;
     uint8_t  iso_endpoint   = 0;
+    uint32_t frame_accum    = 0;   // fractional samples-per-frame carry
 
-    void fillFrame(uint8_t *dst);
+    void fillFrame(uint8_t *dst, uint16_t bytes);
 };
 
 #endif // USB_AUDIO_H_

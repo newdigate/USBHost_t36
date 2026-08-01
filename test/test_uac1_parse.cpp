@@ -219,6 +219,49 @@ static void test_survives_hostile_input(void)
 	}
 }
 
+static void test_frame_bytes(void)
+{
+	// 48 kHz divides evenly: 48 samples every frame, forever.
+	uint32_t acc = 0;
+	for (int i = 0; i < 100; i++) {
+		CHECK_EQ(uac1_frame_bytes(&acc, 48000, 2, 2), 192);
+	}
+	CHECK_EQ(acc, 0);   // no fraction ever accumulates
+
+	// 44.1 kHz does not: 44 samples nine times then 45, repeating. Over any
+	// 10 frames exactly 441 samples must go out, or the stream drifts.
+	acc = 0;
+	int small = 0, large = 0;
+	uint32_t total_samples = 0;
+	for (int i = 0; i < 10; i++) {
+		uint16_t b = uac1_frame_bytes(&acc, 44100, 2, 2);
+		if (b == 176) small++;
+		else if (b == 180) large++;
+		else CHECK_EQ(b, 0);      // any other size is a failure
+		total_samples += b / 4;
+	}
+	CHECK_EQ(small, 9);
+	CHECK_EQ(large, 1);
+	CHECK_EQ(total_samples, 441);
+
+	// And it keeps averaging over the long run rather than drifting.
+	acc = 0;
+	total_samples = 0;
+	for (int i = 0; i < 1000; i++) total_samples += uac1_frame_bytes(&acc, 44100, 2, 2) / 4;
+	CHECK_EQ(total_samples, 44100);   // exactly one second of audio
+
+	// Mono and 8-bit scale as expected.
+	acc = 0;
+	CHECK_EQ(uac1_frame_bytes(&acc, 48000, 1, 2), 96);
+
+	// Rejections.
+	acc = 0;
+	CHECK_EQ(uac1_frame_bytes(0, 48000, 2, 2), 0);
+	CHECK_EQ(uac1_frame_bytes(&acc, 0, 2, 2), 0);
+	CHECK_EQ(uac1_frame_bytes(&acc, 48000, 0, 2), 0);
+	CHECK_EQ(uac1_frame_bytes(&acc, 48000, 2, 0), 0);
+}
+
 int main(void)
 {
 	load_fixture();
@@ -228,6 +271,7 @@ int main(void)
 	test_collects_alt_settings();
 	test_resolves_speaker_feature_unit();
 	test_finds_alt_by_format();
+	test_frame_bytes();
 	test_parses_without_config_header();
 	test_survives_hostile_input();
 	printf("%d checks, %d failures\n", checks, failures);

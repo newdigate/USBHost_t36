@@ -131,3 +131,14 @@ int uac1_find_alt(const UAC1Topology *t, uint32_t rate, uint8_t channels, uint8_
 	}
 	return -1;
 }
+
+uint16_t uac1_frame_bytes(uint32_t *accum, uint32_t rate, uint8_t channels,
+                          uint8_t bytes_per_sample)
+{
+	if (!accum || rate == 0 || channels == 0 || bytes_per_sample == 0) return 0;
+
+	*accum += rate;
+	uint32_t samples = *accum / 1000u;     // whole samples this frame
+	*accum -= samples * 1000u;             // carry the fraction forward
+	return (uint16_t)(samples * channels * bytes_per_sample);
+}

@@ -47,4 +47,17 @@ bool uac1_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out);
 // Returns the alternate setting number matching the format, or -1.
 int uac1_find_alt(const UAC1Topology *t, uint32_t rate, uint8_t channels, uint8_t bits);
 
+// Bytes to send in the next 1 ms USB frame for a given sample rate.
+//
+// Rates that are not a whole number of samples per millisecond need the packet
+// size to alternate: 44.1 kHz is 44.1 samples per frame, so 44 samples nine
+// times then 45 once, repeating. `accum` carries the fractional remainder
+// between calls and must be zeroed when a stream starts.
+//
+// 48 kHz falls out as exactly 48 samples every frame with the remainder always
+// zero, so one code path serves both and the constant-size case needs no
+// special handling.
+uint16_t uac1_frame_bytes(uint32_t *accum, uint32_t rate, uint8_t channels,
+                          uint8_t bytes_per_sample);
+
 #endif // USB_AUDIO_PARSE_H_

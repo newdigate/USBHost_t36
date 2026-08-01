@@ -68,4 +68,13 @@ bool sitd_budget_out(uint16_t max_packet, uint8_t start_uframe,
 // followed without knowing which it points at.
 volatile uint32_t *sitd_skip_iso(volatile uint32_t *frame_link);
 
+// Fixed-capacity pool of siTDs, backed by DMA-reachable memory (see
+// USBHOST_DMAMEM in ehci_iso.cpp). sitd_pool_init() (re)initializes the pool
+// and must be called once before use. sitd_alloc() returns a pointer to a
+// free siTD, or NULL if the pool is exhausted. sitd_free() returns an siTD
+// to the pool; it must not still be linked into the periodic schedule.
+void sitd_pool_init(void);
+sitd_t *sitd_alloc(void);
+void sitd_free(sitd_t *node);
+
 #endif

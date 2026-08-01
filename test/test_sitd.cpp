@@ -125,11 +125,41 @@ static void test_skip_iso(void)
 	CHECK_EQ((void *)sitd_skip_iso(0), (void *)0);
 }
 
+static void test_sitd_pool(void)
+{
+	sitd_pool_init();
+
+	// Drain the pool. Every allocation must be non-null, distinct, and
+	// 32-byte aligned (hardware requirement -- see test_sitd_layout above).
+	sitd_t *seen[256];
+	int n = 0;
+	sitd_t *s;
+	while (n < (int)(sizeof(seen) / sizeof(seen[0])) && (s = sitd_alloc()) != NULL) {
+		CHECK_EQ(((uintptr_t)s) % 32, 0);
+		for (int i = 0; i < n; i++) CHECK_EQ(s == seen[i], false);
+		seen[n++] = s;
+	}
+	CHECK_EQ(n > 0, true);
+
+	// Pool exhausted: allocating further returns null rather than
+	// fabricating a descriptor outside the DMA-reachable pool.
+	CHECK_EQ((void *)sitd_alloc(), (void *)0);
+
+	// Freeing gives back exactly one unit of capacity, and the freed siTD
+	// can be reallocated (LIFO free list, so it is the very next one out).
+	sitd_free(seen[0]);
+	sitd_t *reused = sitd_alloc();
+	CHECK_EQ(reused != NULL, true);
+	CHECK_EQ((void *)reused, (void *)seen[0]);
+	CHECK_EQ((void *)sitd_alloc(), (void *)0);   // exhausted again
+}
+
 int main(void)
 {
 	test_sitd_layout();
 	test_budget_out();
 	test_skip_iso();
+	test_sitd_pool();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

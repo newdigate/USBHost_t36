@@ -64,3 +64,49 @@ volatile uint32_t *sitd_skip_iso(volatile uint32_t *frame_link)
 		frame_link = (volatile uint32_t *)(same_region | (uintptr_t)addr);
 	}
 }
+
+// USBHOST_DMAMEM is defined per-.cpp in this codebase, not in a shared
+// header (see memory.cpp:67, ehci.cpp:66, hid.cpp:41, enumeration.cpp:53) --
+// follow that convention here too. RT1176: plain .bss is DTCM, which the
+// EHCI DMA master cannot reach; DMAMEM places data in DMA-reachable OCRAM.
+// On Teensy 4.x (__IMXRT1062__) .bss is already OCRAM, so, matching every
+// other USBHOST_DMAMEM site in this codebase, the guard is RT1176-only. On
+// the host build (this file compiled for test/test_sitd) USBHOST_DMAMEM is
+// empty, so the pool below is plain static storage -- that is what makes it
+// testable here at all; on RT1176 it is the difference between the EHCI
+// controller being able to see these siTDs and silently not.
+#if defined(__IMXRT1176__)
+#define USBHOST_DMAMEM DMAMEM
+#else
+#define USBHOST_DMAMEM
+#endif
+
+// 12 frames of ring depth (EHCI 1.0 section 8) plus headroom so a refill can
+// run ahead of the hardware.
+#define SITD_POOL_SIZE 16
+
+static USBHOST_DMAMEM sitd_t sitd_pool[SITD_POOL_SIZE] __attribute__ ((aligned(32)));
+static sitd_t *sitd_free_list;
+
+void sitd_pool_init(void)
+{
+	sitd_free_list = NULL;
+	for (int i = SITD_POOL_SIZE - 1; i >= 0; i--) {
+		sitd_pool[i].next_free = sitd_free_list;
+		sitd_free_list = &sitd_pool[i];
+	}
+}
+
+sitd_t *sitd_alloc(void)
+{
+	sitd_t *node = sitd_free_list;
+	if (node) sitd_free_list = node->next_free;
+	return node;
+}
+
+void sitd_free(sitd_t *node)
+{
+	if (!node) return;
+	node->next_free = sitd_free_list;
+	sitd_free_list = node;
+}

@@ -509,6 +509,33 @@ endpoint, confirmed on the analyser."
 
 ## Task 5: Continuous ring
 
+> **DONE 2026-08-01 — audio confirmed audible.** Verified on MIMXRT1170-EVKB
+> against a Logitech USB Headset (046D:0A8F) on `USB_OTG2`:
+>
+> ```
+> UAC1-TEST: streaming started, 1 kHz tone
+> UAC1-TEST: HEARTBEAT ... audio=ready alt=7 pkts/s=1000 total=39260
+> ```
+>
+> **`pkts/s=1000`, sustained** — a packet in every 1 ms frame, no empty frames,
+> holding steady over tens of thousands of packets. And the 1 kHz tone is
+> audible in the headset, which proves the whole path end to end: descriptors,
+> split transactions, frame scheduling, timing and payload format.
+>
+> Two corrections to this plan came out of it:
+>
+> - **The 12-frame ring was wrong.** `PERIODIC_LIST_SIZE` is 32 and a slot is
+>   revisited only every 32 frames, so twelve descriptors would have
+>   transmitted in 12 of every 32 frames — a 37% duty cycle. It needs one siTD
+>   per slot.
+> - **Interrupt-on-complete is off.** With `service()` polling the status word,
+>   IOC on 32 descriptors would add ~1000 IRQ/s into an ISR with no siTD
+>   handling, for nothing.
+>
+> Latency is ~32 ms, not the 10–30 ms the spec budgeted: a slot's payload is
+> written one full frame-list cycle before it plays. Inherent to the frame list
+> size; revisit if it matters.
+
 **Files:**
 - Modify: `ehci_iso.cpp`, `usb_audio.cpp`, `usb_audio.h`
 

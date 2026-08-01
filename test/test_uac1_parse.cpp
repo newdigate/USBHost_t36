@@ -64,12 +64,39 @@ static void test_identifies_interfaces(void)
 	CHECK_EQ(t.streaming_interface, 2);    // not 1, which is the microphone
 }
 
+static void test_collects_alt_settings(void)
+{
+	UAC1Topology t;
+	CHECK(uac1_parse_config(fixture, fixture_len, &t));
+	CHECK_EQ(t.alt_count, 8);              // alts 0..7 on interface 2
+
+	// alt 0 is the zero-bandwidth setting: no endpoint
+	CHECK_EQ(t.alts[0].alternate_setting, 0);
+	CHECK_EQ(t.alts[0].endpoint_address, 0);
+
+	// alt 7 is 48 kHz stereo 16-bit
+	CHECK_EQ(t.alts[7].alternate_setting, 7);
+	CHECK_EQ(t.alts[7].sample_rate, 48000);
+	CHECK_EQ(t.alts[7].channels, 2);
+	CHECK_EQ(t.alts[7].bit_resolution, 16);
+	CHECK_EQ(t.alts[7].subframe_size, 2);
+	CHECK_EQ(t.alts[7].endpoint_address, 0x04);
+	CHECK_EQ(t.alts[7].max_packet_size, 248);
+	// isochronous (bits 1:0 == 01) and adaptive (bits 3:2 == 10) => 0x09
+	CHECK_EQ(t.alts[7].endpoint_attributes, 0x09);
+
+	// alt 6 is 44.1 kHz stereo 16-bit
+	CHECK_EQ(t.alts[6].sample_rate, 44100);
+	CHECK_EQ(t.alts[6].max_packet_size, 228);
+}
+
 int main(void)
 {
 	load_fixture();
 	test_fixture_is_a_config_descriptor();
 	test_rejects_garbage();
 	test_identifies_interfaces();
+	test_collects_alt_settings();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

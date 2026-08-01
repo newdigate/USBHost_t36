@@ -45,21 +45,44 @@ bool uac1_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out)
 	if (stream_if == 0xFF) return false;
 	out->streaming_interface = stream_if;
 
-	bool in_control = false;
+	bool in_control = false, in_stream = false;
+	UAC1AltSetting *alt = 0;
 	size_t i = 0;
 	while (i + 1 < len && desc[i] >= 2 && i + desc[i] <= len) {
 		const uint8_t *b = desc + i;
 		uint8_t l = b[0], t = b[1];
 		if (t == DT_INTERFACE && l >= 9) {
 			in_control = (b[5] == AUDIO_CLASS && b[6] == SUBCLASS_CONTROL);
+			in_stream  = (b[5] == AUDIO_CLASS && b[6] == SUBCLASS_STREAM
+			              && b[2] == stream_if);
+			alt = 0;
 			if (in_control && out->control_interface == 0xFF)
 				out->control_interface = b[2];
-		} else if (t == DT_CS_INTERFACE && l >= 8 && in_control && b[2] == AC_HEADER) {
-			out->bcd_adc = (uint16_t)b[3] | ((uint16_t)b[4] << 8);
+			if (in_stream && out->alt_count < UAC1_MAX_ALTS) {
+				alt = &out->alts[out->alt_count++];
+				memset(alt, 0, sizeof(*alt));
+				alt->alternate_setting = b[3];
+			}
+		} else if (t == DT_CS_INTERFACE && l >= 3) {
+			if (in_control && b[2] == AC_HEADER && l >= 8) {
+				out->bcd_adc = (uint16_t)b[3] | ((uint16_t)b[4] << 8);
+			} else if (in_stream && alt && b[2] == AS_FORMAT_TYPE && l >= 11) {
+				alt->channels       = b[4];
+				alt->subframe_size  = b[5];
+				alt->bit_resolution = b[6];
+				if (b[7] >= 1)  // bSamFreqType: discrete frequencies
+					alt->sample_rate = (uint32_t)b[8]
+					                 | ((uint32_t)b[9] << 8)
+					                 | ((uint32_t)b[10] << 16);
+			}
+		} else if (t == DT_ENDPOINT && l >= 7 && in_stream && alt) {
+			alt->endpoint_address    = b[2];
+			alt->endpoint_attributes = b[3];
+			alt->max_packet_size     = (uint16_t)b[4] | ((uint16_t)b[5] << 8);
 		}
 		i += l;
 	}
-	return true;
+	return out->alt_count > 0;
 }
 
 int uac1_find_alt(const UAC1Topology *t, uint32_t rate, uint8_t channels, uint8_t bits)

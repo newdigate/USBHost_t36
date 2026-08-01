@@ -86,7 +86,11 @@ volatile uint32_t *sitd_skip_iso(volatile uint32_t *frame_link)
 // empty, so the pool below is plain static storage -- that is what makes it
 // testable here at all; on RT1176 it is the difference between the EHCI
 // controller being able to see these siTDs and silently not.
+// DMAMEM itself comes from the Teensy core, so pull that in only on target.
+// The host build must stay free of Arduino headers -- that is what lets this
+// file be compiled into test/test_sitd and exercised without hardware.
 #if defined(__IMXRT1176__)
+#include <Arduino.h>
 #define USBHOST_DMAMEM DMAMEM
 #else
 #define USBHOST_DMAMEM

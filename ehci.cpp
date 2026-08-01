@@ -23,6 +23,7 @@
 
 #include <Arduino.h>
 #include "USBHost_t36.h" // Read this header first for key info
+#include "ehci_iso.h"    // sitd_skip_iso() for the periodic list walk
 
 // All USB EHCI controller hardware access is done from this file's code.
 // Hardware services are made available to the rest of this library by
@@ -1310,15 +1311,22 @@ void USBHost::add_qh_to_periodic_schedule(Pipe_t *pipe)
 		//print("    old slot ", i);
 		//print(": ");
 		//print_qh_list((Pipe_t *)(periodictable[i] & 0xFFFFFFE0));
-		uint32_t num = periodictable[i];
+		// EHCI requires isochronous descriptors to precede interrupt queue
+		// heads within a frame, so start after any that are linked here.
+		// Without this the traversal below would read Pipe_t driver fields
+		// (periodic_interval, horizontal_link) out of iTD/siTD hardware
+		// memory.  With no isochronous descriptors linked -- the state of
+		// this library before ehci_iso.cpp is used -- this returns
+		// &periodictable[i] and the code below is unchanged.
+		volatile uint32_t *head = sitd_skip_iso(&periodictable[i]);
+		uint32_t num = *head;
 		Pipe_t *node = (Pipe_t *)(num & 0xFFFFFFE0);
 		if ((num & 1) || ((num & 6) == 2 && node->periodic_interval < interval)) {
 			//println("  add to slot ", i);
 			pipe->qh.horizontal_link = num;
-			periodictable[i] = (uint32_t)&(pipe->qh) | 2; // 2=QH
+			*head = (uint32_t)&(pipe->qh) | 2; // 2=QH
 		} else {
 			//println("  traverse list ", i);
-			// TODO: skip past iTD, siTD when/if we support isochronous
 			while (node->periodic_interval >= interval) {
 				if (node == pipe) goto nextslot;
 				//print("  num ", num, HEX);

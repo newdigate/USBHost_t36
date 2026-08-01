@@ -37,6 +37,29 @@ what you are probing -- carries plain full-speed traffic. The capture shows the
 **summary** -- packet-type counts, SOF cadence, per-endpoint token counts and
 payload size histograms. Use it to find which endpoint carries the audio.
 
+It reports the analyzer's **decode-error count first**, because a bad probe
+does not look like a bad capture -- it looks like a *quiet* one. A capture that
+is 99% `Error packet` still yields a plausible-looking handful of decoded
+packets, because short handshakes occasionally fall out of noise by chance.
+Always read the error line before believing anything below it.
+
+Diagnosing a bad capture:
+
+- **No SOF packets at all.** A full-speed host emits one every 1.000 ms,
+  unconditionally. Their absence means the decode is broken, not the bus.
+- **Handshakes (NAK/ACK) but no tokens.** A NAK is a *response*; it cannot occur
+  without an IN. Seeing thousands of NAKs and zero IN tokens means only the
+  shortest packets are surviving.
+- **Errors every 1-2 bit times (83-166 ns at full speed), continuing while the
+  bus is idle.** An idle bus produces no transitions and should produce no
+  errors. This pattern is a floating input picking up noise -- check that BOTH
+  D+ and D- are connected, that the channel mapping matches, and that ground is
+  tied to the target.
+
+Sample rate is a separate failure and looks different: too few samples per bit
+degrades long packets first while short ones still decode. Rule the probe out
+before blaming the rate.
+
 **descriptors** -- recovers the configuration descriptor from the enumeration
 control transfer and decodes the UAC1 topology: terminals, feature units, every
 alternate setting with its format and rate, and endpoint sync type.

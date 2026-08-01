@@ -71,8 +71,14 @@ class Packet:
 
 
 def parse(path):
-    """Yield Packet objects and the list of (start, duration) reset events."""
-    packets, resets = [], []
+    """Return (packets, resets, errors).
+
+    'errors' counts frames the analyzer could not decode. These matter: a
+    capture can look almost empty while actually being 97% undecodable, which
+    reads as 'quiet bus' when it really means 'broken probe'. Never report a
+    summary without them.
+    """
+    packets, resets, errors = [], [], 0
     cur, cur_t = bytearray(), None
 
     with open(path, newline='') as fh:
@@ -90,6 +96,11 @@ def parse(path):
                 resets.append((float(row[2]), float(row[3])))
                 continue
 
+            if value.startswith('Error'):
+                errors += 1
+                cur, cur_t = bytearray(), None   # abandon any partial packet
+                continue
+
             if value == 'EOP':
                 if cur:
                     body = cur[1:] if cur[0] == 0x80 else cur
@@ -104,13 +115,28 @@ def parse(path):
                     cur_t = float(row[2])
                 cur.append(int(value[7:], 16))
 
-    return packets, resets
+    return packets, resets, errors
 
 
-def cmd_summary(packets, resets, _args):
+def cmd_summary(packets, resets, args):
+    errors = getattr(args, 'decode_errors', 0)
     if not packets:
+        if errors:
+            sys.exit("no packets decoded, but %d error frames -- the probe is not "
+                     "seeing the bus correctly (check D+/D-/ground)" % errors)
         sys.exit("no packets decoded")
 
+    decoded = len(packets)
+    if errors:
+        share = 100.0 * errors / max(1, errors + decoded)
+        print("!! DECODE ERRORS: %d frames (%.1f%% of all frames) !!" % (errors, share))
+        if share > 5.0:
+            print("   The capture is mostly undecodable -- treat every figure below")
+            print("   as unreliable. Check that BOTH D+ and D- are connected, that the")
+            print("   channel mapping matches, and that ground is tied to the target.")
+            print("   Errors arriving every 1-2 bit times during an idle bus mean a")
+            print("   floating input picking up noise, not a busy bus.")
+        print()
     print("resets      : %s" % ", ".join("%.4fs for %.4fs" % r for r in resets) or "none")
     print("span        : %.4f .. %.4f s (%.2f s)"
           % (packets[0].t, packets[-1].t, packets[-1].t - packets[0].t))
@@ -354,7 +380,8 @@ def main():
     p.set_defaults(func=cmd_iso)
 
     args = ap.parse_args()
-    packets, resets = parse(args.capture)
+    packets, resets, errors = parse(args.capture)
+    args.decode_errors = errors
     args.func(packets, resets, args)
 
 

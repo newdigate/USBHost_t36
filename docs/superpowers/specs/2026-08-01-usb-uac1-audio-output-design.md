@@ -315,9 +315,40 @@ alt 0 to release bandwidth on stop, detach fallback timer.
 
 ## 12. Risks
 
-**M0a is a gate, not a formality.** Everything from M2 onward assumes full-speed
-isochronous works through the embedded TT. That is an inference from this repo's
-split-mask code, not an observation. Do not start M2 before M0a answers it.
+**M0 gate: PASSED 2026-08-01.** A full-speed UAC1 headset enumerates when
+directly attached to the RT1176 `USB_OTG2` root port. Verified on hardware with
+this library's own stack via `rt1176-evkb/examples/usb/usb_audio_uac1_test`,
+which reported the full topology — `bcdADC=1.00`, control interface 0, streaming
+interface 2, feature unit 22, all eight alternate settings — matching
+`tools/usbcap.py descriptors` byte for byte, and accepted `SET_INTERFACE` to
+alt 7. Hot unplug/replug recovered cleanly. This also verifies **M1** on target.
+
+The reference manual confirms the premise section 2 infers from the split-mask
+code:
+
+- §62.3.1.1 — "supports direct connection of a HS/FS/LS device... the
+  transaction translator function... implemented within the DMA and protocol
+  engine blocks to support connection to full and low speed devices."
+- §62.5.4.1 — "Embedded Transaction Translator — Allows direct attachment of FS
+  and LS devices" with no companion controller.
+- Table 62-56 — a directly attached FS/LS device uses **HubAddr = 0**, "the
+  address of the Root Hub where the bus transitions from HS to FS/LS (ie. Split
+  target hub is the root hub)", exactly what `new_Device(speed, 0, 0)` does.
+
+**A trap for the siTD work**, from §62.5.4.1.3: because of the embedded TT the
+port-enable bit is *always* set after port reset regardless of the chirp result,
+so a spec-conformant EHCI driver wrongly concludes "high speed". The real speed
+must come from `PORTSC.PSPD`. This library already does that at `ehci.cpp:478`
+(`(USBHS_PORTSC1 >> 26) & 3`) — new code must not regress it.
+
+**Unresolved, not blocking.** NXP's `usb_host_audio_speaker` fails to enumerate
+this same headset on this same port (`kUSB_HostEventEnumerationFail`), on both
+OTG1 and OTG2. Ruled out by testing: connector choice, board power, OTG adapter,
+`USBMODE.SDIS`, and PSPD handling (their stack reads it at
+`usb_host_ehci.c:4290`). Since our own stack succeeds, this is a fault in the
+NXP example, not a hardware limitation. Its only consequence for this design is
+that M0b cannot use the SDK example as the golden-trace source — capture from
+`usb_audio_uac1_test` instead.
 
 If M0a fails, check the physical causes first — OTG adapter, VBUS, the headset's
 100 mA draw — then try a different UAC1 device. Only if several devices fail on

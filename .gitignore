@@ -22,3 +22,6 @@ examples/Bluetooth/JoystickBT/Compile.cmd
 examples/Storage/DriveInfoAll/Compile.cmd
 examples/Storage/fatFormatterUSB_TEST/Compile.cmd
 *.cmd
+
+# Saleae analyzer exports -- routinely 100 MB+, keep them out of the tree
+*.csv

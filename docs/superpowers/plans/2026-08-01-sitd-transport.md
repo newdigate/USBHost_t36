@@ -22,27 +22,42 @@ device. This plan may proceed.
 example cannot be used for this: it fails to enumerate the test headset (spec
 section 12).
 
-> **Blocked on instrumentation, 2026-08-01.** Probing the EVKB link yields
-> 95–97% `Error packet` frames, while the *same rig, leads and ground* captures
-> the same headset against a Mac at **0% errors** (`Untitled.csv`,
-> `capture-pre-isoaudio-4-headset-to-mac.csv`). So the analyser, sample rate,
-> breakout and headset are all eliminated — the fault is specific to probing the
-> EVKB link.
+> **The analyser is unreliable on this link — verify from the hardware
+> instead, 2026-08-01.**
 >
-> Ruled out: sample rate (fails identically at 500 MS/s, 41 samples/bit),
-> breakout hardware, and ground reference (lead is connected).
+> Probing the EVKB link yields 95–97% `Error packet` frames, while the *same
+> rig, leads and ground* captures the same headset against a Mac at **0%
+> errors** (`Untitled.csv`, `capture-pre-isoaudio-4-headset-to-mac.csv`).
 >
-> Leading candidate: **D+/D− transposed** in the analyser's channel assignment
-> when the leads were re-probed. The successfully decoded bytes sit 664 ns apart
-> — 8 bits at 12 Mbps almost exactly — so the decoder is locking onto real
-> full-speed signal and then mis-decoding it, which points at polarity rather
-> than signal quality. Testable for free by swapping the assignment in Logic 2
-> and re-decoding the existing capture.
+> Eliminated by testing: sample rate (identical failure at 500 MS/s, 41
+> samples/bit), breakout hardware, solderless-breadboard connections (rebuilt
+> soldered, no change), ground reference, analyser configuration (confirmed a
+> single USB LS/FS analyser, D+ and D− on channels 0/1, 3.3 V, Full Speed),
+> and a single bad channel (the glitching appears on both lines).
 >
-> Next if that fails: capture D+ and D− as plain digital channels with no
-> protocol analyzer, on the EVKB link and the Mac link, and compare edges and
-> idle levels directly. Every export so far is the decoder's interpretation, not
-> the signal.
+> The decoder is not mis-configured: clean packets decode exactly right (SYNC
+> then `0x5A` = NAK), and the errors sit on the 12 Mbit/s bit grid — real
+> edges the decoder cannot frame, rather than analog mush. Whatever the cause,
+> captures from this link are best-effort.
+>
+> **Consequence for this plan: do not put the analyser on the critical path.**
+> The EHCI controller writes completion status back into each siTD — Active
+> clears, the error bits report transaction/babble/buffer faults, and
+> bytes-to-transfer counts down. That is the controller reporting what it
+> actually did, which is stronger evidence than a marginal capture. And a UAC1
+> headset that receives audio plays it, so an audible tone proves the whole
+> path end to end.
+>
+> Verification order for Tasks 4–6, strongest first:
+>
+> 1. siTD writeback: Active cleared, no error bits, bytes-to-transfer at 0
+> 2. Firmware starvation and underrun counters
+> 3. Audible tone from the headset
+> 4. `usbcap.py` cadence and gap analysis — best-effort, not a gate
+>
+> The starvation counter measures the same property gap detection was meant to
+> prove, from inside the firmware, and is trustworthy here where the capture
+> is not.
 >
 > Tasks 1–5 do not depend on this.
 

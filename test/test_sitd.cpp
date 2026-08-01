@@ -91,6 +91,8 @@ static uint32_t sitd_node[8] __attribute__ ((aligned(32)));
 static uint32_t sitd_a[8]    __attribute__ ((aligned(32)));
 static uint32_t sitd_b[8]    __attribute__ ((aligned(32)));
 static uint32_t itd_node[8]  __attribute__ ((aligned(32)));
+static uint32_t frame_f;
+static uint32_t cyc[8]       __attribute__ ((aligned(32)));
 
 static void test_skip_iso(void)
 {
@@ -123,6 +125,16 @@ static void test_skip_iso(void)
 
 	// Null input must not crash.
 	CHECK_EQ((void *)sitd_skip_iso(0), (void *)0);
+
+	// A cyclic list must terminate. sitd_skip_iso() runs in interrupt
+	// context, so an unbounded walk over a corrupted list would wedge the
+	// system rather than merely misbehave. cyc[0] links to itself, which no
+	// correct scheduler would ever build -- the point is that corruption
+	// must degrade, not hang. If the bound regresses this test never
+	// returns, which is itself the failure signal.
+	cyc[0] = ((uint32_t)(uintptr_t)cyc) | LINK_TYPE_SITD;
+	frame_f = ((uint32_t)(uintptr_t)cyc) | LINK_TYPE_SITD;
+	CHECK_EQ(sitd_skip_iso(&frame_f) != NULL, true);
 }
 
 static void test_sitd_pool(void)

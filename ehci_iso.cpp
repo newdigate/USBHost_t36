@@ -38,11 +38,21 @@ bool sitd_budget_out(uint16_t max_packet, uint8_t start_uframe,
 #define LINK_TYPE_QH   0x02u
 #define LINK_ADDR_MASK 0xFFFFFFE0u
 
+// Pool size, also the bound on how many isochronous descriptors one frame
+// can legitimately hold (see sitd_skip_iso).
+#define SITD_POOL_SIZE 16
+
 volatile uint32_t *sitd_skip_iso(volatile uint32_t *frame_link)
 {
 	if (!frame_link) return frame_link;
 
-	for (;;) {
+	// Bounded because this runs in interrupt context: a corrupted or cyclic
+	// link list would otherwise spin here forever and wedge the system. A
+	// frame can legitimately hold at most SITD_POOL_SIZE isochronous
+	// descriptors, so anything beyond that is corruption. Bailing out returns
+	// a link field that is still safe for the caller to insert at -- worse
+	// scheduling, but not a hang.
+	for (unsigned guard = 0; guard <= SITD_POOL_SIZE; guard++) {
 		uint32_t link = *frame_link;
 		if ((link & LINK_TERMINATE) || ((link & LINK_TYPE_MASK) == LINK_TYPE_QH)) {
 			return frame_link;
@@ -63,6 +73,7 @@ volatile uint32_t *sitd_skip_iso(volatile uint32_t *frame_link)
 		uintptr_t same_region = (uintptr_t)frame_link & ~(uintptr_t)0xFFFFFFFFu;
 		frame_link = (volatile uint32_t *)(same_region | (uintptr_t)addr);
 	}
+	return frame_link;   /* guard tripped: list is cyclic or corrupt */
 }
 
 // USBHOST_DMAMEM is defined per-.cpp in this codebase, not in a shared
@@ -83,8 +94,6 @@ volatile uint32_t *sitd_skip_iso(volatile uint32_t *frame_link)
 
 // 12 frames of ring depth (EHCI 1.0 section 8) plus headroom so a refill can
 // run ahead of the hardware.
-#define SITD_POOL_SIZE 16
-
 static USBHOST_DMAMEM sitd_t sitd_pool[SITD_POOL_SIZE] __attribute__ ((aligned(32)));
 static sitd_t *sitd_free_list;
 

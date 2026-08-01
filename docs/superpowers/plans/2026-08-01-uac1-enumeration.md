@@ -724,10 +724,23 @@ bool USBHost::setInterface(Device_t *dev, setup_t &setup, uint8_t interface,
 
 - [ ] **Step 3: Verify it compiles**
 
-Run: `arduino-cli compile -b teensy:avr:mimxrt1060evkb examples/HIDDeviceInfo`
+```bash
+arduino-cli compile -b teensy:avr:mimxrt1060evkb --library . examples/HIDDeviceInfo
+```
 
-Expected: compiles with no new warnings. (Compiling for the RT1062 EVKB is
-sufficient here — this code is not chip-specific, and it keeps the check fast.)
+Expected: compiles with no new warnings, and the "Used library" table names
+`/Users/nicholasnewdigate/Development/USBHost_t36`.
+
+**The `--library .` is essential.** The Teensy core ships its own copy of this
+library at
+`~/Library/Arduino15/packages/teensy/hardware/avr/1.59.0/libraries/USBHost_t36`,
+and without `--library` that copy wins — the build then succeeds no matter what
+you changed in the working tree, which is worse than no check at all. Always
+confirm the "Used library" path points at the working tree before believing a
+compile result.
+
+(Compiling for the RT1062 EVKB is sufficient — this code is not chip-specific,
+and it keeps the check fast.)
 
 - [ ] **Step 4: Commit**
 
@@ -902,9 +915,13 @@ void loop() {
 
 - [ ] **Step 5: Verify it compiles**
 
-Run: `arduino-cli compile -b teensy:avr:mimxrt1060evkb examples/Audio/UAC1Info`
+```bash
+arduino-cli compile -b teensy:avr:mimxrt1060evkb --library . examples/Audio/UAC1Info
+```
 
-Expected: compiles with no new warnings.
+Expected: compiles with no new warnings, and the "Used library" table names the
+working tree. See the note in Task 7 Step 3 — without `--library .` this builds
+the Teensy core's bundled copy of USBHost_t36 and tells you nothing.
 
 - [ ] **Step 6: Commit**
 

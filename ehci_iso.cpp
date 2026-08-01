@@ -39,9 +39,12 @@ bool sitd_budget_out(uint16_t max_packet, uint8_t start_uframe,
 #define LINK_TYPE_SITD 0x04u
 #define LINK_ADDR_MASK 0xFFFFFFE0u
 
-// Pool size, also the bound on how many isochronous descriptors one frame
-// can legitimately hold (see sitd_skip_iso).
-#define SITD_POOL_SIZE 16
+// One siTD per periodic frame list slot. A slot is only revisited every
+// PERIODIC_LIST_SIZE frames (32 on this target), so to put a packet on the bus
+// every 1 ms every slot needs its own live descriptor -- a shorter ring would
+// transmit in only that fraction of frames. Also the bound on how many
+// isochronous descriptors one frame can hold (see sitd_skip_iso).
+#define SITD_POOL_SIZE 32
 
 volatile uint32_t *sitd_skip_iso(volatile uint32_t *frame_link)
 {

@@ -106,3 +106,128 @@ bool USBAudioOut::testPacketStatus(sitd_status_t *out) const
 	sitd_get_status(test_sitd, out);
 	return true;
 }
+
+// Generate one frame of payload. A sine when a tone is requested, silence
+// otherwise. 48 samples of stereo 16-bit little-endian = 192 bytes.
+void USBAudioOut::fillFrame(uint8_t *dst)
+{
+	const uint32_t samples = FRAME_BYTES / 4;   // stereo, 2 bytes per channel
+
+	if (tone_hz == 0) {
+		for (uint32_t i = 0; i < FRAME_BYTES; i++) dst[i] = 0;
+		underrun_count++;      // silence is an underrun as far as audio goes
+		return;
+	}
+
+	// Fixed-point phase: 32-bit accumulator wrapping once per cycle. The
+	// increment is (hz << 32) / rate, computed in 64-bit to keep precision.
+	uint32_t inc = (uint32_t)(((uint64_t)tone_hz << 32) / req_rate);
+
+	for (uint32_t i = 0; i < samples; i++) {
+		// Cheap triangle from the top phase bits, then folded to a crude
+		// sine-ish shape. Good enough to hear and to see on a scope; the
+		// real generator is the Audio library's job.
+		int32_t tri = (int32_t)(tone_phase >> 16) - 32768;   // -32768..32767
+		if (tri < 0) tri = -tri;                              // 0..32768
+		int16_t s = (int16_t)((tri - 16384) * 3 / 2);         // centre, scale
+		tone_phase += inc;
+
+		dst[i * 4 + 0] = (uint8_t)(s & 0xFF);
+		dst[i * 4 + 1] = (uint8_t)(s >> 8);
+		dst[i * 4 + 2] = (uint8_t)(s & 0xFF);
+		dst[i * 4 + 3] = (uint8_t)(s >> 8);
+	}
+}
+
+bool USBAudioOut::beginStreaming()
+{
+	if (is_streaming) return true;
+	if (active_alt < 0 || !device) return false;
+
+	const UAC1AltSetting *alt = 0;
+	for (uint8_t i = 0; i < topo.alt_count; i++) {
+		if (topo.alts[i].alternate_setting == (uint8_t)active_alt) {
+			alt = &topo.alts[i];
+			break;
+		}
+	}
+	if (!alt || alt->endpoint_address == 0) return false;
+	iso_endpoint = alt->endpoint_address & 0x0F;
+
+	// Release the single-packet test descriptor first. It holds one of the
+	// pool's entries and is still linked into a frame, so leaving it would
+	// both starve the ring by one slot and double-book the frame it sits in.
+	if (test_sitd) {
+		sitd_unlink(periodic_frame_slot(test_sitd->frame), test_sitd);
+		sitd_free(test_sitd);
+		test_sitd = 0;
+	}
+
+	// One descriptor per periodic slot. A slot is revisited every
+	// RING_SLOTS frames, so anything less transmits in only that fraction
+	// of frames rather than continuously.
+	for (uint32_t i = 0; i < RING_SLOTS; i++) {
+		ring[i] = sitd_alloc();
+		if (!ring[i]) {              // out of pool: unwind rather than half-run
+			stopStreaming();
+			return false;
+		}
+	}
+
+	for (uint32_t i = 0; i < RING_SLOTS; i++) {
+		fillFrame(ring_buf[i]);
+		// ioc=false: service() polls the status word, so interrupt-on-
+		// complete would only add ~1000 IRQ/s into an ISR with no siTD
+		// handling.
+		if (!sitd_fill_out(ring[i], device->address, iso_endpoint, 0, 0,
+		                   ring_buf[i], FRAME_BYTES, 0, false)) {
+			stopStreaming();
+			return false;
+		}
+		sitd_link(periodic_frame_slot(i), ring[i], (uint16_t)i);
+	}
+
+	packets_sent = 0;
+	underrun_count = 0;
+	is_streaming = true;
+	return true;
+}
+
+void USBAudioOut::stopStreaming()
+{
+	for (uint32_t i = 0; i < RING_SLOTS; i++) {
+		if (!ring[i]) continue;
+		sitd_unlink(periodic_frame_slot(i), ring[i]);
+		sitd_free(ring[i]);
+		ring[i] = 0;
+	}
+	is_streaming = false;
+}
+
+// Re-arm whatever the controller has finished. Each descriptor stays linked in
+// its slot for the lifetime of the stream -- only the payload and the status
+// word are rewritten, so there is no unlink/relink churn on the hot path.
+//
+// Must be called often enough to get round the whole ring within the 32 ms a
+// slot takes to come back. Slots not re-armed in time are simply skipped by
+// the controller: no packet that frame, which shows up as packetsSent()
+// climbing more slowly than 1000/second.
+void USBAudioOut::service()
+{
+	if (!is_streaming) return;
+
+	for (uint32_t i = 0; i < RING_SLOTS; i++) {
+		sitd_t *s = ring[i];
+		if (!s) continue;
+
+		sitd_status_t st;
+		sitd_get_status(s, &st);
+		if (st.active) continue;             // hardware has not run it yet
+
+		fillFrame(ring_buf[i]);
+		if (sitd_fill_out(s, device->address, iso_endpoint, 0, 0,
+		                  ring_buf[i], FRAME_BYTES, 0, false)) {
+			packets_sent++;
+		}
+	}
+}

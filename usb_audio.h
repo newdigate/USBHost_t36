@@ -25,6 +25,27 @@ public:
     // empty, or the packet cannot be scheduled.
     bool postTestPacket(uint16_t len);
 
+    // --- continuous streaming (Task 5) ---
+    //
+    // begin() fills every periodic frame slot with a live siTD so a packet
+    // goes out each 1 ms frame. service() re-arms whichever have completed and
+    // must be called often enough to keep ahead of the hardware -- a slot is
+    // revisited every 32 ms, which is the whole margin.
+    bool beginStreaming();
+    void stopStreaming();
+    void service();                       // call from Task()
+    bool streaming() const { return is_streaming; }
+
+    // Packets the controller has actually transmitted. At 48 kHz this must
+    // climb by ~1000/second; anything less means frames went out empty. This
+    // is the correctness measure for the ring, replacing capture gap analysis.
+    uint32_t packetsSent() const { return packets_sent; }
+    uint32_t underruns() const { return underrun_count; }
+
+    // Test tone instead of real audio, so streaming can be proven audible
+    // before any Audio library integration exists. 0 disables (silence).
+    void tone(uint32_t hz) { tone_hz = hz; }
+
     // Completion status written back by the controller. Valid a frame or two
     // after postTestPacket(). Active false with no error bits and bytes_left
     // zero means the packet went out -- this is the primary verification,
@@ -63,6 +84,21 @@ private:
     sitd_t  *test_sitd = nullptr;
     uint16_t test_len  = 0;
     uint8_t  test_buf[256];
+
+    // Streaming ring: one siTD and one payload buffer per periodic slot.
+    // 192 bytes = 48 samples of 48 kHz stereo 16-bit = exactly one frame.
+    static const uint32_t RING_SLOTS = 32;
+    static const uint16_t FRAME_BYTES = 192;
+    sitd_t  *ring[RING_SLOTS] = {};
+    uint8_t  ring_buf[RING_SLOTS][FRAME_BYTES];
+    bool     is_streaming   = false;
+    uint32_t packets_sent   = 0;
+    uint32_t underrun_count = 0;
+    uint32_t tone_hz        = 0;
+    uint32_t tone_phase     = 0;
+    uint8_t  iso_endpoint   = 0;
+
+    void fillFrame(uint8_t *dst);
 };
 
 #endif // USB_AUDIO_H_

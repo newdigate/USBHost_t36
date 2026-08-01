@@ -69,8 +69,10 @@ interface requires.
 | `middleware/usb/host/class/usb_host_audio.c` | UAC1/UAC2 class driver reference |
 | `_boards/evkbmimxrt1170/usb_examples/usb_host_audio_speaker` | Runnable example for this exact board |
 
-**Test device** — the headset captured on 2026-08-01, decoded via
-`tools/usbcap.py descriptors`:
+**Test device** — a **Logitech USB Headset, VID `046D` PID `0A8F`** (identity read
+off the device on target, 2026-08-01). Captured and decoded via
+`tools/usbcap.py descriptors`; the same topology was later read directly by
+`USBAudioOut` on the RT1176, and is reproducible across power cycles:
 
 - UAC1 (`bcdADC` 1.00), 4 interfaces
 - Interface 2 = playback, endpoint `0x04`, **adaptive** sync, no feedback endpoint

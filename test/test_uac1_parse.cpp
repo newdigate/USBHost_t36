@@ -99,6 +99,33 @@ static void test_resolves_speaker_feature_unit(void)
 	CHECK_EQ(t.feature_unit_id, 22);
 }
 
+static void test_finds_alt_by_format(void)
+{
+	UAC1Topology t;
+	CHECK(uac1_parse_config(fixture, fixture_len, &t));
+	CHECK_EQ(uac1_find_alt(&t, 48000, 2, 16), 7);   // bring-up target
+	CHECK_EQ(uac1_find_alt(&t, 44100, 2, 16), 6);   // shipping target
+	CHECK_EQ(uac1_find_alt(&t,  8000, 2, 16), 1);
+	CHECK_EQ(uac1_find_alt(&t, 96000, 2, 16), -1);  // unsupported rate
+	CHECK_EQ(uac1_find_alt(&t, 48000, 1, 16), -1);  // unsupported channel count
+	CHECK_EQ(uac1_find_alt(0,   48000, 2, 16), -1);
+}
+
+// USBDriver::claim() at type 0 receives `enumbuf + 9` -- the descriptor set
+// with the 9-byte configuration header already skipped. Parsing either form
+// must give the same answer, or the driver will disagree with these tests.
+static void test_parses_without_config_header(void)
+{
+	UAC1Topology full, offset;
+	CHECK(uac1_parse_config(fixture, fixture_len, &full));
+	CHECK(uac1_parse_config(fixture + 9, fixture_len - 9, &offset));
+	CHECK_EQ(offset.streaming_interface, full.streaming_interface);
+	CHECK_EQ(offset.control_interface,   full.control_interface);
+	CHECK_EQ(offset.feature_unit_id,     full.feature_unit_id);
+	CHECK_EQ(offset.alt_count,           full.alt_count);
+	CHECK_EQ(uac1_find_alt(&offset, 48000, 2, 16), 7);
+}
+
 int main(void)
 {
 	load_fixture();
@@ -107,6 +134,8 @@ int main(void)
 	test_identifies_interfaces();
 	test_collects_alt_settings();
 	test_resolves_speaker_feature_unit();
+	test_finds_alt_by_format();
+	test_parses_without_config_header();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

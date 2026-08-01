@@ -105,6 +105,12 @@ bool uac1_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out)
 
 int uac1_find_alt(const UAC1Topology *t, uint32_t rate, uint8_t channels, uint8_t bits)
 {
-	(void)t; (void)rate; (void)channels; (void)bits;
+	if (!t) return -1;
+	for (uint8_t k = 0; k < t->alt_count; k++) {
+		const UAC1AltSetting *a = &t->alts[k];
+		if (a->sample_rate == rate && a->channels == channels &&
+		    a->bit_resolution == bits && a->endpoint_address != 0)
+			return (int)a->alternate_setting;
+	}
 	return -1;
 }

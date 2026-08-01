@@ -2907,6 +2907,6 @@ public:
 // do not expose these defines in Arduino sketches or other libraries
 #undef MSC_MAX_FILENAME_LEN
 
-
+#include "usb_audio.h"
 
 #endif

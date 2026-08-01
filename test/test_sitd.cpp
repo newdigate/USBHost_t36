@@ -24,9 +24,37 @@ static void test_sitd_layout(void)
 	CHECK_EQ(sizeof(sitd_t) % 32, 0);
 }
 
+static void test_budget_out(void)
+{
+	uint8_t s = 0xAA, c = 0xAA;
+
+	// 192 bytes at 48 kHz spans two microframes (188 + 4).
+	CHECK_EQ(sitd_budget_out(192, 0, &s, &c), true);
+	CHECK_EQ(s, 0x03);   // uframes 0 and 1
+	CHECK_EQ(c, 0x00);   // isochronous OUT takes no complete-splits
+
+	// 180 bytes (44.1 kHz worst case) fits in one microframe.
+	CHECK_EQ(sitd_budget_out(180, 0, &s, &c), true);
+	CHECK_EQ(s, 0x01);
+	CHECK_EQ(c, 0x00);
+
+	// Same packet started later shifts the mask.
+	CHECK_EQ(sitd_budget_out(180, 3, &s, &c), true);
+	CHECK_EQ(s, 0x08);
+
+	// Bounds: iso is capped at 1023 bytes on full speed, and a packet must
+	// not run past the end of the frame.
+	CHECK_EQ(sitd_budget_out(1024, 0, &s, &c), false);
+	CHECK_EQ(sitd_budget_out(192, 7, &s, &c), false);  // would need uframe 8
+	CHECK_EQ(sitd_budget_out(0, 0, &s, &c), false);    // zero-length
+	CHECK_EQ(sitd_budget_out(192, 0, 0, &c), false);   // null out-param
+	CHECK_EQ(sitd_budget_out(192, 0, &s, 0), false);   // null out-param
+}
+
 int main(void)
 {
 	test_sitd_layout();
+	test_budget_out();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

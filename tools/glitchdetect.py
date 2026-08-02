@@ -9,6 +9,18 @@ driven into a microphone input, so it is heavily clipped. Clipping destroys
 amplitude information but leaves zero-crossing *timing* intact, and a sample
 drop or repeat at the far end shows up precisely as a shifted zero crossing.
 
+IMPORTANT -- what `detect` alone cannot tell you. When the capture device is
+itself an asynchronous USB interface, CoreAudio rate-converts it, and that
+adds its own phase wander (measured: +-2000 samples over 14 minutes) plus a
+steady floor of interval anomalies (measured: ~7 per second) that has nothing
+to do with the device under test. A raw glitch count is therefore dominated by
+the capture chain and is NOT a measurement of the device.
+
+What survives the confound is how the anomaly rate *varies with the rate bias*,
+because the capture chain does not know or care what the bias is. Use
+`correlate`, treat the flat floor as instrument noise, and read the answer off
+the V-shaped excess above it.
+
 Usage:
     glitchdetect.py selftest
     glitchdetect.py detect <recording.wav> [--tone 440] [--thresh 0.25]
@@ -42,29 +54,60 @@ def read_wav(path):
     return data / peak, rate
 
 
-def zero_crossings(x, hysteresis=0.25):
+def dominant_period(x, rate):
+    """Period of the strongest spectral component, in samples.
+
+    Used only to set the minimum spacing between accepted crossings. Taken
+    from the spectrum rather than from the crossings themselves because a
+    noisy signal can produce clusters of crossings whose median spacing is
+    nothing like the real period.
+    """
+    n = min(len(x), 1 << 20)
+    seg = x[:n] * np.hanning(n)
+    spec = np.abs(np.fft.rfft(seg))
+    spec[0] = 0.0
+    freq = np.fft.rfftfreq(n, 1.0 / rate)[np.argmax(spec)]
+    return rate / freq if freq > 0 else 0.0
+
+
+def zero_crossings(x, rate=48000.0, min_sep_frac=0.5):
     """Rising zero crossings, located to sub-sample precision.
 
-    A Schmitt trigger keeps noise near zero from producing a burst of false
-    crossings; the signal must fall below -hysteresis before another rising
-    crossing counts. Positions are linearly interpolated between the bracketing
-    samples, which matters because a whole-sample quantisation of the crossing
-    would itself look like jitter of the size being measured.
+    Positions are linearly interpolated between the bracketing samples: a
+    whole-sample quantisation would itself be jitter of the same order as the
+    effect being measured.
+
+    Crossings closer together than min_sep_frac of a period are discarded,
+    which removes the clusters noise produces at a zero crossing. That
+    replaces a stateful Schmitt trigger, which cannot be vectorised and is far
+    too slow over tens of millions of samples.
     """
-    armed = False
-    out = []
-    prev = x[0]
-    for i in range(1, len(x)):
-        cur = x[i]
-        if not armed:
-            if cur < -hysteresis:
-                armed = True
-        elif prev <= 0.0 < cur:
-            frac = -prev / (cur - prev) if cur != prev else 0.0
-            out.append(i - 1 + frac)
-            armed = False
-        prev = cur
-    return np.array(out)
+    x = np.asarray(x, dtype=np.float64)
+    prev, cur = x[:-1], x[1:]
+    idx = np.nonzero((prev <= 0.0) & (cur > 0.0))[0]
+    if len(idx) == 0:
+        return np.array([])
+    denom = cur[idx] - prev[idx]
+    frac = np.where(denom != 0.0, -prev[idx] / np.where(denom != 0.0, denom, 1.0), 0.0)
+    pos = idx + frac
+    if len(pos) < 3:
+        return pos
+
+    period = dominant_period(x, rate)
+    if period <= 0:
+        return pos
+    min_sep = min_sep_frac * period
+
+    keep = np.empty(len(pos))
+    keep[0] = pos[0]
+    n = 1
+    last = pos[0]
+    for p in pos[1:]:
+        if p - last >= min_sep:
+            keep[n] = p
+            n += 1
+            last = p
+    return keep[:n]
 
 
 def find_glitches(x, rate, tone_hz=440.0, sigma=6.0, min_samples=4.0):
@@ -75,7 +118,7 @@ def find_glitches(x, rate, tone_hz=440.0, sigma=6.0, min_samples=4.0):
     A glitch is a single interval that departs from that period by more than
     both an absolute floor and a multiple of the observed jitter.
     """
-    zc = zero_crossings(x)
+    zc = zero_crossings(x, rate)
     if len(zc) < 20:
         return [], 0.0
     intervals = np.diff(zc)

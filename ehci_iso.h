@@ -112,6 +112,13 @@ void sitd_pool_init(void);
 sitd_t *sitd_alloc(void);
 void sitd_free(sitd_t *node);
 
+// Fixed-capacity pool of iTDs, same conventions as the siTD pool above:
+// DMA-reachable backing, (re)init before use, alloc returns NULL when
+// exhausted, free requires the node be unlinked from the schedule.
+void itd_pool_init(void);
+itd_t *itd_alloc(void);
+void itd_free(itd_t *node);
+
 // Link an siTD into one periodic frame list slot, at the head of that frame's
 // list. `frame_slot` is &periodictable[frame]; the caller owns the table.
 //

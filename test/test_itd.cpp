@@ -3,6 +3,7 @@
 #include "ehci_iso.h"
 #include <stdio.h>
 #include <stddef.h>
+#include <stdint.h>
 
 static int failures = 0, checks = 0;
 #define CHECK_EQ(a, b) do { checks++; long _ck_a = (long)(a), _ck_b = (long)(b); \
@@ -26,9 +27,27 @@ static void test_itd_layout(void)
 	CHECK_EQ((char *)&pool[1] - (char *)&pool[0], (long)sizeof(itd_t));
 }
 
+static void test_itd_pool(void)
+{
+	itd_pool_init();
+	itd_t *seen[64];
+	int n = 0;
+	itd_t *node;
+	while (n < 64 && (node = itd_alloc()) != NULL) {
+		CHECK_EQ(((uintptr_t)node) % 32, 0);
+		for (int i = 0; i < n; i++) CHECK_EQ(node == seen[i], false);
+		seen[n++] = node;
+	}
+	CHECK_EQ(n, 40);                       // spec section 4: 40-node pool
+	CHECK_EQ((void *)itd_alloc(), (void *)0);
+	itd_free(seen[0]);
+	CHECK_EQ((void *)itd_alloc(), (void *)seen[0]);
+}
+
 int main(void)
 {
 	test_itd_layout();
+	test_itd_pool();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

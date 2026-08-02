@@ -75,6 +75,7 @@ bool sitd_budget_in(uint16_t max_packet, uint8_t start_uframe,
 // pipe could never be armed. Also the bound on how many isochronous
 // descriptors one frame can hold (see sitd_skip_iso).
 #define SITD_POOL_SIZE 40
+#define ITD_POOL_SIZE  40
 
 volatile uint32_t *sitd_skip_iso(volatile uint32_t *frame_link)
 {
@@ -156,6 +157,32 @@ void sitd_free(sitd_t *node)
 	if (!node) return;
 	node->next_free = sitd_free_list;
 	sitd_free_list = node;
+}
+
+static USBHOST_DMAMEM itd_t itd_pool[ITD_POOL_SIZE] __attribute__ ((aligned(32)));
+static itd_t *itd_free_list;
+
+void itd_pool_init(void)
+{
+	itd_free_list = NULL;
+	for (int i = ITD_POOL_SIZE - 1; i >= 0; i--) {
+		itd_pool[i].next_free = itd_free_list;
+		itd_free_list = &itd_pool[i];
+	}
+}
+
+itd_t *itd_alloc(void)
+{
+	itd_t *node = itd_free_list;
+	if (node) itd_free_list = node->next_free;
+	return node;
+}
+
+void itd_free(itd_t *node)
+{
+	if (!node) return;
+	node->next_free = itd_free_list;
+	itd_free_list = node;
 }
 
 void sitd_link(volatile uint32_t *frame_slot, sitd_t *node, uint16_t frame)

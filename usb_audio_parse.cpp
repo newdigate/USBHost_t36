@@ -122,9 +122,23 @@ bool uac1_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out)
 		           && b[2] == AS_EP_GENERAL) {
 			alt->ep_controls = b[3];
 		} else if (t == DT_ENDPOINT && l >= 7 && in_stream && alt) {
-			alt->endpoint_address    = b[2];
-			alt->endpoint_attributes = b[3];
-			alt->max_packet_size     = (uint16_t)b[4] | ((uint16_t)b[5] << 8);
+			bool is_out = (b[2] & EP_DIR_MASK) == EP_DIR_OUT;
+			bool is_iso = (b[3] & EP_XFER_TYPE_MASK) == EP_XFER_ISO;
+			if (is_out && is_iso) {
+				// The data endpoint. Assigning unconditionally here used to
+				// let a trailing feedback endpoint overwrite it, which only
+				// showed up on the first device with two endpoints in one
+				// alternate setting.
+				alt->endpoint_address    = b[2];
+				alt->endpoint_attributes = b[3];
+				alt->max_packet_size     = (uint16_t)b[4] | ((uint16_t)b[5] << 8);
+				// bLength 9 is the audio endpoint descriptor, which adds
+				// bRefresh and bSynchAddress. Zero means no feedback endpoint.
+				if (l >= 9 && b[8] != 0) alt->feedback_endpoint = b[8];
+			} else if (!is_out && is_iso) {
+				if (alt->feedback_endpoint == 0) alt->feedback_endpoint = b[2];
+				if (l >= 9) alt->feedback_refresh = b[7];
+			}
 		}
 		i += l;
 	}

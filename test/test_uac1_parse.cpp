@@ -410,6 +410,67 @@ static void test_multirate_stereo_device(void)
 	CHECK_EQ(uac1_alt_needs_rate_request(a), true);
 }
 
+// XMOS xcore-200 MC Audio built as 1AMi2o2xxxxxx with 16-bit output --
+// descriptors extracted from the .xe before flashing. First device with two
+// endpoints in one alternate setting: an asynchronous data endpoint plus a
+// feedback endpoint. The parser used to overwrite the data endpoint with the
+// feedback one, so the driver would have streamed 196-byte packets at a 3-byte
+// endpoint.
+static void test_async_feedback_device(void)
+{
+	static uint8_t buf[4096];
+	FILE *f = fopen("fixtures/xmos_uac1_async_feedback.bin", "rb");
+	if (!f) { printf("FAIL cannot open xmos fixture\n"); failures++; return; }
+	size_t len = fread(buf, 1, sizeof(buf), f);
+	fclose(f);
+	CHECK_EQ(len, 233);
+
+	UAC1Topology t;
+	CHECK(uac1_parse_config(buf, len, &t));
+	CHECK_EQ(t.bcd_adc, 0x0100);
+	CHECK_EQ(t.streaming_interface, 1);
+
+	const UAC1AltSetting *a = &t.alts[1];
+	// The data endpoint, not the feedback endpoint.
+	CHECK_EQ(a->endpoint_address, 0x01);
+	CHECK_EQ(a->max_packet_size, 196);
+	CHECK_EQ(a->channels, 2);
+	CHECK_EQ(a->bit_resolution, 16);
+
+	// bmAttributes 0x05: isochronous, asynchronous.
+	CHECK_EQ(a->endpoint_attributes, 0x05);
+	CHECK_EQ((a->endpoint_attributes >> 2) & 0x03, 1);
+
+	// Feedback endpoint comes from bSynchAddress on the data endpoint. Its own
+	// usage bits say "data", so they cannot be used to find it.
+	CHECK_EQ(a->feedback_endpoint, 0x82);
+	CHECK_EQ(a->feedback_refresh, 4);      // 2^4 = 16 ms
+
+	CHECK_EQ(uac1_find_alt(&t, 48000, 2, 16), 1);
+	CHECK_EQ(uac1_find_alt(&t, 44100, 2, 16), 1);
+	CHECK_EQ(uac1_alt_needs_rate_request(a), true);
+}
+
+// Devices with a single endpoint per alt must keep no feedback endpoint.
+static void test_no_feedback_on_sync_devices(void)
+{
+	static uint8_t buf[4096];
+	const char *files[] = { "fixtures/headset_uac1_config.bin",
+	                        "fixtures/generalplus_uac1_multirate.bin" };
+	for (int k = 0; k < 2; k++) {
+		FILE *f = fopen(files[k], "rb");
+		if (!f) { printf("FAIL cannot open %s\n", files[k]); failures++; continue; }
+		size_t len = fread(buf, 1, sizeof(buf), f);
+		fclose(f);
+		UAC1Topology t;
+		CHECK(uac1_parse_config(buf, len, &t));
+		for (uint8_t i = 1; i < t.alt_count; i++) {
+			CHECK_EQ(t.alts[i].feedback_endpoint, 0);
+			CHECK_EQ((t.alts[i].endpoint_address & 0x80), 0);   // OUT
+		}
+	}
+}
+
 int main(void)
 {
 	load_fixture();
@@ -422,6 +483,8 @@ int main(void)
 	test_frame_bytes();
 	test_multirate_device();
 	test_multirate_stereo_device();
+	test_async_feedback_device();
+	test_no_feedback_on_sync_devices();
 	test_supports_rate();
 	test_needs_rate_request();
 	test_parses_without_config_header();

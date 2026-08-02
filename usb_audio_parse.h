@@ -40,6 +40,13 @@ struct UAC1AltSetting {
 	// bmAttributes from the class-specific AS isochronous endpoint descriptor
 	// (CS_ENDPOINT / EP_GENERAL). Bit 0 is the sampling frequency control.
 	uint8_t  ep_controls;
+	// Asynchronous endpoints pair the data endpoint with a feedback endpoint
+	// that reports the device's true sample rate. Taken from bSynchAddress in
+	// the 9-byte audio endpoint descriptor where present, else from the IN
+	// isochronous endpoint on this output interface -- the feedback endpoint's
+	// own bmAttributes usage bits read as "data", so they cannot identify it.
+	uint8_t  feedback_endpoint;
+	uint8_t  feedback_refresh;   // poll period exponent: 2^n ms
 };
 
 // True if this alternate setting can carry `rate`, by either idiom. Selecting

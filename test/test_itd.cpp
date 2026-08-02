@@ -44,7 +44,7 @@ static void test_itd_pool(void)
 	CHECK_EQ((void *)itd_alloc(), (void *)seen[0]);
 }
 
-static uint8_t itd_buf[2048] __attribute__ ((aligned(32)));
+static uint8_t itd_buf[8192] __attribute__ ((aligned(32)));
 
 static void test_fill_out(void)
 {
@@ -52,9 +52,8 @@ static void test_fill_out(void)
 	itd_t *n = itd_alloc();
 	CHECK_EQ(n != NULL, true);
 
-	// Eight mixed-size transactions with a page crossing; the lengths
-	// are chosen to exercise the offset math, not to model a real audio
-	// rate.
+	// Eight mixed-size transactions; lengths chosen to exercise the
+	// offset math.
 	uint16_t lens[8] = {176, 208, 176, 176, 208, 176, 176, 208};
 	CHECK_EQ(itd_fill_out(n, 3, 1, itd_buf, lens, 208, false), true);
 
@@ -90,7 +89,8 @@ static void test_fill_out(void)
 	// ioc lands on the LAST active transaction
 	CHECK_EQ(n->transaction[7] & ITD_TXN_IOC, ITD_TXN_IOC);
 
-	// rejections: len > max packet, mps > 1024, nulls
+	// rejections: len > max packet, mps > 1024, nulls, endpoint/address
+	// field widths
 	uint16_t bad[8] = {209, 0, 0, 0, 0, 0, 0, 0};
 	CHECK_EQ(itd_fill_out(n, 3, 1, itd_buf, bad, 208, false), false);
 	CHECK_EQ(itd_fill_out(n, 3, 1, itd_buf, lens, 1025, false), false);
@@ -98,6 +98,36 @@ static void test_fill_out(void)
 	CHECK_EQ(itd_fill_out(NULL, 3, 1, itd_buf, lens, 208, false), false);
 	CHECK_EQ(itd_fill_out(n, 3, 16, itd_buf, lens, 208, false), false);
 	CHECK_EQ(itd_fill_out(n, 128, 1, itd_buf, lens, 208, false), false);
+
+	// The rejection contract is "descriptor untouched": a fill that fails
+	// PAST valid entries must not have scribbled on the node first. (A
+	// mutant writing transactions progressively passes every check above.)
+	CHECK_EQ(itd_fill_out(n, 3, 1, itd_buf, lens, 208, false), true);
+	uint32_t snap_txn[8], snap_buf[7];
+	for (int i = 0; i < 8; i++) snap_txn[i] = n->transaction[i];
+	for (int i = 0; i < 7; i++) snap_buf[i] = n->bufptr[i];
+	uint16_t midbad[8] = {176, 176, 5000, 176, 176, 176, 176, 176};
+	CHECK_EQ(itd_fill_out(n, 3, 1, itd_buf, midbad, 208, false), false);
+	for (int i = 0; i < 8; i++) CHECK_EQ(n->transaction[i], snap_txn[i]);
+	for (int i = 0; i < 7; i++) CHECK_EQ(n->bufptr[i], snap_buf[i]);
+
+	// IOC must land on the last ACTIVE transaction, not literally slot 7.
+	uint16_t lead5[8] = {176, 176, 176, 176, 176, 0, 0, 0};
+	CHECK_EQ(itd_fill_out(n, 3, 1, itd_buf, lead5, 208, true), true);
+	CHECK_EQ(n->transaction[4] & ITD_TXN_IOC, ITD_TXN_IOC);
+	CHECK_EQ(n->transaction[4] & ITD_TXN_ACTIVE, ITD_TXN_ACTIVE);
+	CHECK_EQ(n->transaction[5], 0);
+	CHECK_EQ(n->transaction[7], 0);
+
+	// Force a genuine page crossing: start 100 bytes before a 4K boundary
+	// inside the buffer, so transaction 1 must select PG 1.
+	uint8_t *near_end = itd_buf +
+		((4096u - ((uintptr_t)itd_buf & 0xFFFu) - 100u) & 0xFFFu);
+	uint16_t cross[8] = {176, 176, 0, 0, 0, 0, 0, 0};
+	CHECK_EQ(itd_fill_out(n, 3, 1, near_end, cross, 208, false), true);
+	CHECK_EQ((n->transaction[0] >> ITD_TXN_PG_SHIFT) & 7, 0);
+	CHECK_EQ((n->transaction[1] >> ITD_TXN_PG_SHIFT) & 7, 1);
+	CHECK_EQ(n->transaction[1] & ITD_TXN_OFFSET_MASK, (((uintptr_t)near_end & 0xFFFu) + 176u) & 0xFFFu);
 }
 
 int main(void)

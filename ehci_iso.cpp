@@ -205,6 +205,8 @@ bool itd_fill_out(itd_t *node, uint8_t dev_addr, uint8_t endpoint,
 		if (len[k] == 0) { txn[k] = 0; continue; }
 		if (len[k] > max_packet) return false;
 		uint32_t pg = off >> 12;
+		// structural bound for the 7 bufptr entries; unreachable while
+		// max_packet <= 1024 keeps 8 transactions inside ~3 pages
 		if (pg > 6) return false;   // contiguous buffer outran the pages
 		txn[k] = ITD_TXN_ACTIVE
 		       | ((uint32_t)len[k] << ITD_TXN_LENGTH_SHIFT)
@@ -222,10 +224,10 @@ bool itd_fill_out(itd_t *node, uint8_t dev_addr, uint8_t endpoint,
 	// page0 + i*4K. Low bits per EHCI Table 3-6.
 	for (int i = 0; i < 7; i++) node->bufptr[i] = page0 + (uint32_t)i * 4096u;
 	node->bufptr[0] |= ((uint32_t)endpoint << 8) | dev_addr;
+	// Direction is bufptr[1] bit 11 -- stays 0 = OUT because bufptr[1]
+	// only ever receives max_packet, bits 10:0.
 	node->bufptr[1] |= max_packet;
-	node->bufptr[2] |= 1u;              // Multi = 1. (Direction is bufptr[1] bit 11 --
-	                                     // stays 0 = OUT because bufptr[1] only ever
-	                                     // receives max_packet, bits 10:0.)
+	node->bufptr[2] |= 1u;              // Multi = 1
 	return true;
 }
 

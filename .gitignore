@@ -31,3 +31,5 @@ test/test_uac1_parse
 test/test_uac1_parse.dSYM/
 test/test_sitd
 test/test_sitd.dSYM/
+test/test_feedback
+test/test_feedback.dSYM/

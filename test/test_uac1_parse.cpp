@@ -521,6 +521,23 @@ static void test_frame_bytes_mhz(void)
 	CHECK_EQ(uac1_frame_bytes_mhz(0, 44100000u, 2, 2), 0);
 }
 
+static void test_uframe_bytes(void)
+{
+	// 44.1 kHz across 8 kHz microframes: 5.5125 samples/uframe. Over 80
+	// microframes exactly 441 samples must emerge, sizes only 5 or 6.
+	uint32_t accum = 0;
+	uint32_t total = 0;
+	for (int i = 0; i < 80; i++) {
+		uint16_t b = uac2_uframe_bytes_mhz(&accum, 44100000u, 8, 4);
+		CHECK_EQ(b % 32, 0);               // whole 8ch x 4B frames only
+		uint16_t samples = b / 32;
+		CHECK_EQ(samples == 5 || samples == 6, true);
+		total += samples;
+	}
+	CHECK_EQ(total, 441);
+	CHECK_EQ(accum, 0);                    // exact over the repeat period
+}
+
 int main(void)
 {
 	load_fixture();
@@ -532,6 +549,7 @@ int main(void)
 	test_finds_alt_by_format();
 	test_frame_bytes();
 	test_frame_bytes_mhz();
+	test_uframe_bytes();
 	test_multirate_device();
 	test_multirate_stereo_device();
 	test_async_feedback_device();

@@ -219,3 +219,28 @@ uint16_t uac1_frame_bytes_mhz(uint32_t *accum, uint32_t rate_mhz, uint8_t channe
 {
 	return frame_bytes_scaled(accum, rate_mhz, 1000000u, channels, bytes_per_sample);
 }
+
+uint16_t uac2_uframe_bytes_mhz(uint32_t *accum, uint32_t rate_mhz, uint8_t channels,
+                               uint8_t bytes_per_sample)
+{
+	return frame_bytes_scaled(accum, rate_mhz, 8000000u, channels, bytes_per_sample);
+}
+
+uint32_t uac_pack16(uint8_t *dst, const int16_t *src, uint32_t frames,
+                    uint8_t ch_live, uint8_t ch_total, uint8_t subslot)
+{
+	if (!dst || !src || subslot < 2 || subslot > 4 || ch_live > ch_total) return 0;
+	uint8_t *p = dst;
+	for (uint32_t f = 0; f < frames; f++) {
+		for (uint8_t c = 0; c < ch_total; c++) {
+			int32_t s = (c < ch_live) ? src[f * ch_live + c] : 0;
+			uint32_t v = (uint32_t)(s << 8);		// 16 -> 24 in the top bits
+			switch (subslot) {
+			case 2: *p++ = (uint8_t)s; *p++ = (uint8_t)((uint16_t)s >> 8); break;
+			case 3: *p++ = (uint8_t)v; *p++ = (uint8_t)(v >> 8); *p++ = (uint8_t)(v >> 16); break;
+			case 4: *p++ = (uint8_t)v; *p++ = (uint8_t)(v >> 8); *p++ = (uint8_t)(v >> 16); *p++ = (uint8_t)(v >> 24); break;
+			}
+		}
+	}
+	return (uint32_t)(p - dst);
+}

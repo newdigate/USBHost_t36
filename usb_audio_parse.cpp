@@ -233,12 +233,13 @@ uint32_t uac_pack16(uint8_t *dst, const int16_t *src, uint32_t frames,
 	uint8_t *p = dst;
 	for (uint32_t f = 0; f < frames; f++) {
 		for (uint8_t c = 0; c < ch_total; c++) {
-			int32_t s = (c < ch_live) ? src[f * ch_live + c] : 0;
-			uint32_t v = (uint32_t)(s << 8);		// 16 -> 24 in the top bits
+			int16_t s = (c < ch_live) ? src[f * ch_live + c] : 0;
+			uint8_t lo = (uint8_t)s;
+			uint8_t hi = (uint8_t)((uint16_t)s >> 8);
 			switch (subslot) {
-			case 2: *p++ = (uint8_t)s; *p++ = (uint8_t)((uint16_t)s >> 8); break;
-			case 3: *p++ = (uint8_t)v; *p++ = (uint8_t)(v >> 8); *p++ = (uint8_t)(v >> 16); break;
-			case 4: *p++ = (uint8_t)v; *p++ = (uint8_t)(v >> 8); *p++ = (uint8_t)(v >> 16); *p++ = (uint8_t)(v >> 24); break;
+			case 2: *p++ = lo; *p++ = hi; break;
+			case 3: *p++ = 0; *p++ = lo; *p++ = hi; break;
+			case 4: *p++ = 0; *p++ = 0; *p++ = lo; *p++ = hi; break;
 			}
 		}
 	}

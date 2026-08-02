@@ -102,16 +102,21 @@ uint16_t uac1_frame_bytes(uint32_t *accum, uint32_t rate, uint8_t channels,
 
 // Bytes for the next 125 us microframe at high speed: same fractional
 // accumulator as uac1_frame_bytes_mhz but against 8000 microframes/s.
-// The accumulator unit is mHz/8 -- do not share an accumulator between
-// the frame and microframe variants.
+// The accumulator unit is millihertz for both variants; what differs is
+// the whole-sample divisor, which is why an accumulator must never be
+// shared across variants.
 uint16_t uac2_uframe_bytes_mhz(uint32_t *accum, uint32_t rate_mhz, uint8_t channels,
                                uint8_t bytes_per_sample);
 
-// Pack 16-bit interleaved frames into a device subslot layout: 16-in-2
-// verbatim, 24-in-3 / 24-in-4 with the sample in the top 16 of 24 bits,
-// little-endian. src carries ch_live interleaved channels per frame;
-// device channels beyond ch_live are zero-filled. Returns bytes written,
-// 0 for unsupported subslot sizes (or ch_live > ch_total / null args).
+// Pack 16-bit interleaved frames into a device subslot layout, with the
+// sample LEFT-JUSTIFIED within the subslot as USB Audio Data Formats 2.0
+// section 2.3.1 requires: 16-in-2 verbatim little-endian; 24-in-3 emits
+// {00, lo, hi}; 24-in-4 emits {00, 00, lo, hi} -- padding always at the
+// least-significant end, so a negative sample's sign lives in its own
+// high byte and no separate sign handling exists. src carries ch_live
+// interleaved channels per frame; device channels beyond ch_live are
+// zero-filled. Returns bytes written, 0 for unsupported subslot sizes,
+// null pointers, or ch_live > ch_total.
 uint32_t uac_pack16(uint8_t *dst, const int16_t *src, uint32_t frames,
                     uint8_t ch_live, uint8_t ch_total, uint8_t subslot);
 

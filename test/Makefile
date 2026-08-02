@@ -24,6 +24,7 @@ run: test_uac1_parse test_sitd test_fifo test_feedback test_itd test_pack
 	./test_fifo
 	./test_feedback
 	./test_itd
+	./test_pack
 
 test_fifo: test_fifo.cpp ../usb_audio_fifo.cpp ../usb_audio_fifo.h
 	$(CXX) $(CXXFLAGS) -o $@ test_fifo.cpp ../usb_audio_fifo.cpp

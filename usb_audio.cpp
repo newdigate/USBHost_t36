@@ -95,6 +95,13 @@ void USBAudioOut::disconnect()
 	pending_alt = -1;
 	ctrl_state = CTRL_IDLE;
 	err_xact = err_babble = err_buffer = short_sends = 0;
+	// Feedback state is deliberately NOT cleared here: like the OUT ring,
+	// the feedback descriptors stay linked across a detach and self-heal on
+	// re-attach (beginStreaming early-returns while is_streaming, and the
+	// re-claimed device's address flows into every re-arm). While the
+	// device is absent the reads complete with transaction errors, no
+	// report lands, and fb_frames_since ages the last one out -- sizing
+	// slews back to nominal + trim on its own.
 	memset(&topo, 0, sizeof(topo));
 }
 
@@ -258,6 +265,32 @@ bool USBAudioOut::beginStreaming()
 		sitd_link(periodic_frame_slot(i), ring[i], (uint16_t)i);
 	}
 
+	// Arm the feedback reader if this alternate setting advertises one.
+	// Failure to arm is not failure to stream: the loop just stays open,
+	// exactly as it was before feedback support existed.
+	fb_endpoint = alt->feedback_endpoint & 0x0F;
+	fb_rate_mhz = 0;
+	fb_avg_mhz = 0;
+	fb_frames_since = 0xFFFFFF;
+	fb_packets = fb_rejects = fb_errors = 0;
+	fb_sizing_mhz = effectiveRateMilliHz();
+	if (fb_endpoint) {
+		for (uint32_t k = 0; k < FB_SLOTS; k++) {
+			fb_sitd[k] = sitd_alloc();
+			if (!fb_sitd[k] ||
+			    !sitd_fill_in(fb_sitd[k], device->address, fb_endpoint, 0, 0,
+			                  fb_buf[k], sizeof(fb_buf[k]), 0, false)) {
+				if (fb_sitd[k]) { sitd_free(fb_sitd[k]); fb_sitd[k] = 0; }
+				fb_endpoint = 0;
+				break;
+			}
+			// Slots 16 frames apart: each recurs every 32 ms, together
+			// they poll at the 16 ms cadence of bRefresh=4.
+			uint16_t frame = (uint16_t)(k * 16);
+			sitd_link(periodic_frame_slot(frame), fb_sitd[k], frame);
+		}
+	}
+
 	packets_sent = 0;
 	underrun_count = 0;
 	is_streaming = true;
@@ -272,6 +305,13 @@ void USBAudioOut::stopStreaming()
 		sitd_free(ring[i]);
 		ring[i] = 0;
 	}
+	for (uint32_t k = 0; k < FB_SLOTS; k++) {
+		if (!fb_sitd[k]) continue;
+		sitd_unlink(periodic_frame_slot(fb_sitd[k]->frame), fb_sitd[k]);
+		sitd_free(fb_sitd[k]);
+		fb_sitd[k] = 0;
+	}
+	fb_endpoint = 0;
 	is_streaming = false;
 }
 
@@ -288,6 +328,42 @@ void USBAudioOut::service()
 	if (!is_streaming) return;
 
 	topUpFromTone();
+
+	// Collect feedback reports before re-arming audio frames, so a report
+	// that just landed steers the very next packet sizing below.
+	for (uint32_t k = 0; k < FB_SLOTS; k++) {
+		sitd_t *s = fb_sitd[k];
+		if (!s) continue;
+
+		sitd_status_t st;
+		sitd_get_status(s, &st);
+		if (st.active) continue;
+
+		if (st.err_transaction || st.err_babble || st.err_buffer) {
+			fb_errors++;
+		} else {
+			uint16_t rx = (uint16_t)(sizeof(fb_buf[k]) - st.bytes_left);
+			// The FS report is exactly 3 bytes of 10.14. Anything else --
+			// including a zero-length response from a not-yet-armed
+			// endpoint -- is counted and skipped, never applied.
+			uint32_t mhz = (rx == 3) ? uac1_feedback_to_mhz(fb_buf[k]) : 0;
+			if (mhz && uac1_feedback_plausible(mhz, effectiveRateMilliHz())) {
+				fb_rate_mhz = mhz;
+				// Average before use: the raw report dithers between
+				// adjacent values, and slewing after the mean rather
+				// than the instantaneous report is what nulls the
+				// residual (raw-chasing measured +4.8 ppm on this
+				// bench).
+				fb_avg_mhz = uac1_fb_average(fb_avg_mhz, mhz);
+				fb_frames_since = 0;
+				fb_packets++;
+			} else {
+				fb_rejects++;
+			}
+		}
+		sitd_fill_in(s, device->address, fb_endpoint, 0, 0,
+		             fb_buf[k], sizeof(fb_buf[k]), 0, false);
+	}
 
 	for (uint32_t i = 0; i < RING_SLOTS; i++) {
 		sitd_t *s = ring[i];
@@ -306,10 +382,24 @@ void USBAudioOut::service()
 		if (st.err_buffer)      err_buffer++;
 		if (st.bytes_left != 0) short_sends++;
 
+		// One frame consumed: age the feedback and take one slew step of
+		// the sizing rate toward the current target. The target is the
+		// device's own report when following and fresh, else the manual
+		// nominal + trim. Slew rather than jump: ~90 ppm/s keeps a
+		// recovering-from-stale transition inaudible, and it converges
+		// from a cold start (85 ppm measured on this bench) in about a
+		// second.
+		if (fb_frames_since < 0xFFFFFF) fb_frames_since++;
+		uint32_t target = (follow_fb && fb_frames_since < FB_FRESH_FRAMES
+		                   && fb_avg_mhz)
+		                  ? fb_avg_mhz : effectiveRateMilliHz();
+		fb_sizing_mhz = uac1_rate_slew(fb_sizing_mhz, target,
+		                               FB_SLEW_MHZ_PER_FRAME);
+
 		// Packet size is not constant at every rate: 44.1 kHz needs 44
 		// samples nine frames out of ten and 45 on the tenth, or the
 		// stream drifts against the device's clock.
-		uint16_t bytes = uac1_frame_bytes_mhz(&frame_accum, effectiveRateMilliHz(),
+		uint16_t bytes = uac1_frame_bytes_mhz(&frame_accum, fb_sizing_mhz,
 		                                      req_channels, req_bits / 8);
 		if (bytes == 0 || bytes > MAX_FRAME_BYTES) continue;
 		fillFrame(ring_buf[i], bytes);

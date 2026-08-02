@@ -30,6 +30,33 @@ bool sitd_budget_out(uint16_t max_packet, uint8_t start_uframe,
 	return true;
 }
 
+bool sitd_budget_in(uint16_t max_packet, uint8_t start_uframe,
+                    uint8_t *smask, uint8_t *cmask)
+{
+	if (!smask || !cmask) return false;
+	if (max_packet == 0 || max_packet > FS_ISO_MAX_PACKET) return false;
+	if (start_uframe > 7) return false;
+
+	// One complete-split per 188-byte chunk, starting two microframes after
+	// the start-split: the TT runs the FS IN during start_uframe+1 and the
+	// data is collected from start_uframe+2 on (NXP usb_host_ehci.c,
+	// USB_HostBandwidthHsHostAllocateIso: "there are two micro-frame
+	// interval between start-split and complete-split"). A window past
+	// microframe 7 is a scheduling failure -- for isochronous the NXP
+	// allocator rejects rather than clips, because a clipped window is a
+	// packet that can silently never be collected.
+	uint32_t chunks = (max_packet + FS_BYTES_PER_UFRAME - 1) / FS_BYTES_PER_UFRAME;
+	if (start_uframe + 2u + chunks > 8) return false;
+
+	uint8_t mask = 0;
+	for (uint32_t k = 0; k < chunks; k++)
+		mask |= (uint8_t)(1u << (start_uframe + 2 + k));
+
+	*smask = (uint8_t)(1u << start_uframe);
+	*cmask = mask;
+	return true;
+}
+
 // Periodic frame list link-pointer encoding, EHCI 1.0 section 3.1: bit 0 is
 // Terminate, bits 2:1 are the type (0=iTD, 1=QH, 2=siTD, 3=FSTN), and bits
 // 31:5 are the (32-byte aligned) address of the linked structure.
@@ -39,12 +66,15 @@ bool sitd_budget_out(uint16_t max_packet, uint8_t start_uframe,
 #define LINK_TYPE_SITD 0x04u
 #define LINK_ADDR_MASK 0xFFFFFFE0u
 
-// One siTD per periodic frame list slot. A slot is only revisited every
-// PERIODIC_LIST_SIZE frames (32 on this target), so to put a packet on the bus
-// every 1 ms every slot needs its own live descriptor -- a shorter ring would
-// transmit in only that fraction of frames. Also the bound on how many
-// isochronous descriptors one frame can hold (see sitd_skip_iso).
-#define SITD_POOL_SIZE 32
+// One siTD per periodic frame list slot (32 on this target) for the audio
+// OUT ring -- a slot is only revisited every PERIODIC_LIST_SIZE frames, so to
+// put a packet on the bus every 1 ms every slot needs its own live
+// descriptor. Plus headroom for the UAC1 feedback endpoint reader (two
+// descriptors, 16 frames apart) and a test descriptor: without the headroom,
+// beginStreaming() would drain the pool to exactly zero and the feedback
+// pipe could never be armed. Also the bound on how many isochronous
+// descriptors one frame can hold (see sitd_skip_iso).
+#define SITD_POOL_SIZE 40
 
 volatile uint32_t *sitd_skip_iso(volatile uint32_t *frame_link)
 {
@@ -213,6 +243,43 @@ bool sitd_fill_out(sitd_t *node, uint8_t dev_addr, uint8_t endpoint,
 	node->buf1 = ((addr + 4096u) & 0xFFFFF000u)
 	           | (tp << SITD_TP_SHIFT)
 	           | (tcount << SITD_TCOUNT_SHIFT);
+
+	node->back = LINK_TERMINATE;
+	return true;
+}
+
+bool sitd_fill_in(sitd_t *node, uint8_t dev_addr, uint8_t endpoint,
+                  uint8_t hub_addr, uint8_t port, void *buf,
+                  uint16_t len, uint8_t start_uframe, bool ioc)
+{
+	if (!node || !buf) return false;
+
+	uint8_t smask = 0, cmask = 0;
+	if (!sitd_budget_in(len, start_uframe, &smask, &cmask)) return false;
+
+	uint32_t addr = (uint32_t)(uintptr_t)buf;
+
+	// Direction 1 = IN.
+	node->ep_char = ((uint32_t)1u << SITD_DIRECTION_SHIFT)
+	              | ((uint32_t)port     << SITD_PORT_SHIFT)
+	              | ((uint32_t)hub_addr << SITD_HUB_ADDR_SHIFT)
+	              | ((uint32_t)endpoint << SITD_ENDPT_SHIFT)
+	              | ((uint32_t)dev_addr << SITD_DEV_ADDR_SHIFT);
+
+	node->uframe_mask = ((uint32_t)cmask << SITD_CMASK_SHIFT)
+	                  | ((uint32_t)smask << SITD_SMASK_SHIFT);
+
+	// Total bytes is the room offered; the controller decrements it by what
+	// actually arrives, so received = len - bytes_left at completion.
+	node->status = ((uint32_t)len << SITD_TOTAL_BYTES_SHIFT)
+	             | SITD_STATUS_ACTIVE
+	             | (ioc ? (1uL << SITD_IOC_SHIFT) : 0u);
+
+	node->buf0 = addr;
+
+	// TP and T-count are OUT-only (EHCI 1.0 Table 3-12); for IN, buffer
+	// pointer 1 is just the next 4K page in case the payload straddles one.
+	node->buf1 = (addr + 4096u) & 0xFFFFF000u;
 
 	node->back = LINK_TERMINATE;
 	return true;

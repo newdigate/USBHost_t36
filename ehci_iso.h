@@ -54,6 +54,17 @@ typedef struct sitd_struct {
 bool sitd_budget_out(uint16_t max_packet, uint8_t start_uframe,
                      uint8_t *smask, uint8_t *cmask);
 
+// Same for a full-speed isochronous IN: one start-split carrying the IN
+// token in microframe `start_uframe`, then complete-splits to collect the
+// data -- one per 188-byte chunk, beginning two microframes after the
+// start-split (the FS transaction itself occupies the microframe between).
+// This is the NXP EHCI host stack's scheduling for this controller
+// (usb_host_ehci.c, USB_HostBandwidthHsHostAllocateIso). A complete-split
+// window that would run past microframe 7 is a scheduling failure, not a
+// clip: for isochronous there is no later retry to absorb the loss.
+bool sitd_budget_in(uint16_t max_packet, uint8_t start_uframe,
+                    uint8_t *smask, uint8_t *cmask);
+
 // Walk past any isochronous descriptors (iTD/siTD) at the head of a periodic
 // frame list entry, and return the address of the link field where the first
 // queue head is, or should be, attached.
@@ -99,6 +110,16 @@ void sitd_free(sitd_t *node);
 bool sitd_fill_out(sitd_t *node, uint8_t dev_addr, uint8_t endpoint,
                    uint8_t hub_addr, uint8_t port, const void *buf,
                    uint16_t len, uint8_t start_uframe, bool ioc);
+
+// Fill an siTD for one full-speed isochronous IN transaction. `len` is the
+// room available in `buf` (which must be DMA-reachable); the device may send
+// less, and the caller computes received = len - status.bytes_left after
+// completion. TP/T-count are OUT-only fields (EHCI 1.0 Table 3-12), so buf1
+// carries only the next-page pointer. The UAC1 feedback endpoint (3 bytes
+// every 2^bRefresh ms) is the intended user.
+bool sitd_fill_in(sitd_t *node, uint8_t dev_addr, uint8_t endpoint,
+                  uint8_t hub_addr, uint8_t port, void *buf,
+                  uint16_t len, uint8_t start_uframe, bool ioc);
 
 // Completion status, read back from the descriptor after the controller has
 // processed it. `active` false with no error flags and bytes_left 0 means the

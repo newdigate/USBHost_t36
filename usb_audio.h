@@ -4,6 +4,7 @@
 #define USB_AUDIO_H_
 #include "USBHost_t36.h"
 #include "usb_audio_parse.h"
+#include "usb_audio_feedback.h"
 #include "ehci_iso.h"
 #include "usb_audio_fifo.h"
 
@@ -104,6 +105,40 @@ public:
     // inside 32 bits; it exists to stop a typo silently destroying the stream.
     static const int32_t MAX_RATE_BIAS_PPM = 10000;
 
+    // --- feedback endpoint ---
+    //
+    // An asynchronous device measures its own converter and reports it on a
+    // paired isochronous IN endpoint: 3 bytes of 10.14 samples-per-frame
+    // every 2^bRefresh ms (UAC1 3.7.2.2). Reading it and sizing packets from
+    // it is what closes the rate loop permanently; the manual trim above
+    // covers only the crystal offset it was measured at, and this device was
+    // measured drifting -85.7 ppm on 2026-08-02 -- a number with no reason
+    // to survive temperature or unit swaps.
+    //
+    // The feedback pipe is armed whenever the active alternate setting
+    // advertises one (via bSynchAddress); followFeedback() only controls
+    // whether the *sizing* follows it. Measurement stays on either way, so a
+    // locked-bias drift run still sees what the device reports.
+    void followFeedback(bool on) { follow_fb = on; }
+    bool followingFeedback() const { return follow_fb; }
+
+    // Averaged decoded report, in millihertz; 0 before the first one. This
+    // is the servo target: devices dither the raw report between adjacent
+    // values, so the raw value is only for debugging.
+    uint32_t feedbackRateMilliHz() const { return fb_avg_mhz; }
+    uint32_t feedbackRawMilliHz() const { return fb_rate_mhz; }
+    // The rate packets are currently sized for (the slewed value actually
+    // fed to the accumulator; equals effectiveRateMilliHz() when feedback is
+    // off or stale).
+    uint32_t sizingRateMilliHz() const { return fb_sizing_mhz; }
+    uint32_t feedbackPackets() const { return fb_packets; }   // good decodes
+    uint32_t feedbackRejects() const { return fb_rejects; }   // wrong size/implausible
+    uint32_t feedbackErrors() const { return fb_errors; }     // transport errors
+    // Fresh = a good report within the last 250 frames (15+ refresh
+    // periods); stale sizing falls back to nominal + trim.
+    bool feedbackFresh() const { return fb_frames_since < FB_FRESH_FRAMES; }
+    uint8_t feedbackEndpoint() const { return fb_endpoint; }
+
     // Called once per USB frame consumed, from service(). The Audio library
     // adapter uses this to run the graph, which makes the USB frame clock the
     // master -- see the design spec section 8.
@@ -192,6 +227,26 @@ private:
     uint8_t  iso_endpoint   = 0;
     uint32_t frame_accum    = 0;   // fractional samples-per-frame carry, in mHz
     int32_t  rate_bias_ppm  = 0;
+
+    // Feedback pipe state. Two descriptors 16 frames apart give the 16 ms
+    // cadence of bRefresh=4 on a 32-slot periodic list where each slot
+    // recurs every 32 ms. 8 bytes of room per read: the FS report is 3
+    // bytes, and anything else that arrives is counted as a reject rather
+    // than a buffer error.
+    static const uint32_t FB_SLOTS = 2;
+    static const uint32_t FB_FRESH_FRAMES = 250;
+    static const uint32_t FB_SLEW_MHZ_PER_FRAME = 4;   // ~90 ppm/s at 44.1k
+    sitd_t  *fb_sitd[FB_SLOTS] = {};
+    uint8_t  fb_buf[FB_SLOTS][8];
+    uint8_t  fb_endpoint    = 0;   // 0 = none advertised
+    bool     follow_fb      = true;
+    uint32_t fb_rate_mhz    = 0;   // last plausible decode (display/debug)
+    uint32_t fb_avg_mhz     = 0;   // EMA of decodes -- the servo target
+    uint32_t fb_sizing_mhz  = 0;   // slewed rate the accumulator uses
+    uint32_t fb_frames_since = 0xFFFFFF;   // frames since last good decode
+    uint32_t fb_packets     = 0;
+    uint32_t fb_rejects     = 0;
+    uint32_t fb_errors      = 0;
 
     const UAC1AltSetting *findAlt(int alt_number) const;
     bool requestSampleRate(const UAC1AltSetting *alt);

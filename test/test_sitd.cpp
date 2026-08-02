@@ -280,6 +280,107 @@ static void test_fill_out(void)
 	CHECK_EQ(st.bytes_left, 0);
 }
 
+static void test_budget_in(void)
+{
+	uint8_t s = 0xAA, c = 0xAA;
+
+	// Full-speed isochronous IN behind the (embedded) TT: one start-split in
+	// microframe S carrying the IN token, then complete-splits to collect the
+	// data, one per 188-byte chunk, starting two microframes later -- the FS
+	// transaction itself runs during S+1. This is the NXP EHCI host stack's
+	// scheduling (usb_host_ehci.c, USB_HostBandwidthHsHostAllocateIso:
+	// "there are two micro-frame interval between start-split and
+	// complete-split"; CS count = ceil(maxPacket/188)).
+	//
+	// The 3-byte UAC1 feedback packet is the real user: one CS, S+2.
+	CHECK_EQ(sitd_budget_in(3, 0, &s, &c), true);
+	CHECK_EQ(s, 0x01);
+	CHECK_EQ(c, 0x04);
+
+	// Later start shifts both masks.
+	CHECK_EQ(sitd_budget_in(3, 5, &s, &c), true);
+	CHECK_EQ(s, 0x20);
+	CHECK_EQ(c, 0x80);
+
+	// S=6 would need a complete-split in microframe 8: rejected, because for
+	// isochronous the NXP allocator treats a clipped CS window as an
+	// allocation failure rather than silently shrinking it.
+	CHECK_EQ(sitd_budget_in(3, 6, &s, &c), false);
+
+	// 188 bytes is still one chunk; 189 needs a second complete-split.
+	CHECK_EQ(sitd_budget_in(188, 0, &s, &c), true);
+	CHECK_EQ(c, 0x04);
+	CHECK_EQ(sitd_budget_in(189, 0, &s, &c), true);
+	CHECK_EQ(c, 0x0C);
+
+	// Largest legal FS iso packet: 1023 bytes = 6 chunks, CS in uframes
+	// 2..7 -- exactly fits from S=0 and nowhere later.
+	CHECK_EQ(sitd_budget_in(1023, 0, &s, &c), true);
+	CHECK_EQ(s, 0x01);
+	CHECK_EQ(c, 0xFC);
+	CHECK_EQ(sitd_budget_in(1023, 1, &s, &c), false);
+
+	// Bounds and null checks, mirroring sitd_budget_out.
+	CHECK_EQ(sitd_budget_in(1024, 0, &s, &c), false);
+	CHECK_EQ(sitd_budget_in(0, 0, &s, &c), false);
+	CHECK_EQ(sitd_budget_in(3, 8, &s, &c), false);
+	CHECK_EQ(sitd_budget_in(3, 0, 0, &c), false);
+	CHECK_EQ(sitd_budget_in(3, 0, &s, 0), false);
+}
+
+static void test_fill_in(void)
+{
+	sitd_pool_init();
+	sitd_t *n = sitd_alloc();
+	CHECK_EQ(n != NULL, true);
+
+	// The UAC1 feedback read: 8 bytes of room for a 3-byte packet from
+	// endpoint 2 IN on device 3, directly attached, microframe 0, polled.
+	CHECK_EQ(sitd_fill_in(n, 3, 2, 0, 0, fill_buf, 8, 0, false), true);
+
+	// Endpoint characteristics: IN (bit 31 set), ep 2, addr 3, root port.
+	CHECK_EQ(n->ep_char >> 31, 1);
+	CHECK_EQ((n->ep_char >> 8) & 0x0F, 2);
+	CHECK_EQ(n->ep_char & 0x7F, 3);
+	CHECK_EQ((n->ep_char >> 16) & 0x7F, 0);
+	CHECK_EQ((n->ep_char >> 24) & 0x7F, 0);
+
+	// Masks per the budget: SS at uframe 0, CS at uframe 2.
+	CHECK_EQ(n->uframe_mask & 0xFF, 0x01);
+	CHECK_EQ((n->uframe_mask >> 8) & 0xFF, 0x04);
+
+	// Status: active, room for 8 bytes, no IOC.
+	CHECK_EQ(n->status & 0x80, 0x80);
+	CHECK_EQ((n->status >> 16) & 0x3FF, 8);
+	CHECK_EQ(n->status >> 31, 0);
+
+	// Buffer pointers. TP and T-count are OUT-only fields (EHCI 1.0 Table
+	// 3-12: "used only for OUT"), so buf1 carries just the next-page
+	// pointer, with the low bits zero.
+	CHECK_EQ(n->buf0, (uint32_t)(uintptr_t)fill_buf);
+	CHECK_EQ(n->buf1 & 0xFFFFF000u,
+	         (((uint32_t)(uintptr_t)fill_buf) + 4096u) & 0xFFFFF000u);
+	CHECK_EQ(n->buf1 & 0xFFFu, 0);
+
+	CHECK_EQ(n->back, 1);
+
+	// Completion: controller clears Active and decrements total-bytes by
+	// what arrived. 3 of 8 bytes -> bytes_left 5, and the driver computes
+	// received = armed - bytes_left.
+	n->status &= ~0x80u;
+	n->status = (n->status & ~(0x3FFu << 16)) | (5u << 16);
+	sitd_status_t st;
+	sitd_get_status(n, &st);
+	CHECK_EQ(st.active, false);
+	CHECK_EQ(st.bytes_left, 5);
+
+	// Rejections, mirroring sitd_fill_out.
+	CHECK_EQ(sitd_fill_in(n, 3, 2, 0, 0, fill_buf, 8, 6, false), false);
+	CHECK_EQ(sitd_fill_in(n, 3, 2, 0, 0, NULL, 8, 0, false), false);
+	CHECK_EQ(sitd_fill_in(NULL, 3, 2, 0, 0, fill_buf, 8, 0, false), false);
+	CHECK_EQ(sitd_fill_in(n, 3, 2, 0, 0, fill_buf, 0, 0, false), false);
+}
+
 int main(void)
 {
 	test_sitd_layout();
@@ -288,6 +389,8 @@ int main(void)
 	test_sitd_pool();
 	test_link_unlink();
 	test_fill_out();
+	test_budget_in();
+	test_fill_in();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

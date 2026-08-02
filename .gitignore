@@ -35,3 +35,5 @@ test/test_feedback
 test/test_feedback.dSYM/
 test/test_fifo
 test/test_fifo.dSYM/
+test/test_itd
+test/test_itd.dSYM/

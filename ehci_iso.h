@@ -55,7 +55,7 @@ typedef struct sitd_struct {
 typedef struct itd_struct {
 	uint32_t next;            // next link pointer + type
 	uint32_t transaction[8];  // per-microframe status/control
-	uint32_t bufptr[7];       // page pointers; low bits carry ep/mps/dir
+	uint32_t bufptr[7];       // page pointers; low bits carry ep/mps/dir/mult
 	// --- software bookkeeping, not read by hardware ---
 	struct itd_struct *next_free;
 	uint16_t frame;           // frame index this iTD is linked into

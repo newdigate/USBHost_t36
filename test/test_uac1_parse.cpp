@@ -370,6 +370,46 @@ static void test_supports_rate(void)
 	CHECK_EQ(uac1_alt_supports_rate(&a, 0), false);
 }
 
+// Generalplus 1B3F:2008, captured with the descriptor survey. A second,
+// independent witness for the multi-rate idiom -- and unlike the Jabra it is
+// stereo 16-bit, so USBAudioOut actually claims it. Under the old parser only
+// tSamFreq[0] (44100) was stored, so the driver's default 48 kHz found no
+// match and the device was silently not claimed.
+static void test_multirate_stereo_device(void)
+{
+	static uint8_t buf[4096];
+	FILE *f = fopen("fixtures/generalplus_uac1_multirate.bin", "rb");
+	if (!f) { printf("FAIL cannot open generalplus fixture\n"); failures++; return; }
+	size_t len = fread(buf, 1, sizeof(buf), f);
+	fclose(f);
+	CHECK_EQ(len, 244);
+
+	UAC1Topology t;
+	CHECK(uac1_parse_config(buf, len, &t));
+	CHECK_EQ(t.bcd_adc, 0x0100);
+	CHECK_EQ(t.streaming_interface, 1);
+	CHECK_EQ(t.alt_count, 2);
+
+	const UAC1AltSetting *a = &t.alts[1];
+	CHECK_EQ(a->endpoint_address, 0x05);
+	CHECK_EQ(a->channels, 2);
+	CHECK_EQ(a->bit_resolution, 16);
+	CHECK_EQ(a->max_packet_size, 192);
+	CHECK_EQ(a->rate_count, 2);
+	CHECK_EQ(a->rates[0], 44100);
+	CHECK_EQ(a->rates[1], 48000);
+
+	// Both offered rates resolve to the one alt setting.
+	CHECK_EQ(uac1_find_alt(&t, 48000, 2, 16), 1);
+	CHECK_EQ(uac1_find_alt(&t, 44100, 2, 16), 1);
+	CHECK_EQ(uac1_find_alt(&t, 96000, 2, 16), -1);
+
+	// Two rates behind one alt, with the sampling frequency control present:
+	// SET_INTERFACE cannot determine the rate, so SET_CUR is required.
+	CHECK_EQ(a->ep_controls, 0x01);
+	CHECK_EQ(uac1_alt_needs_rate_request(a), true);
+}
+
 int main(void)
 {
 	load_fixture();
@@ -381,6 +421,7 @@ int main(void)
 	test_finds_alt_by_format();
 	test_frame_bytes();
 	test_multirate_device();
+	test_multirate_stereo_device();
 	test_supports_rate();
 	test_needs_rate_request();
 	test_parses_without_config_header();

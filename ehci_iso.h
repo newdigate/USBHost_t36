@@ -134,6 +134,12 @@ typedef struct {
 
 void itd_get_txn_status(const itd_t *node, unsigned txn, itd_txn_status_t *out);
 
+// Link/unlink an iTD in a periodic frame list slot; same head-insertion
+// contract and traversal bounds as the siTD variants above, with the iTD
+// link type (frame-list type bits 00).
+void itd_link(volatile uint32_t *frame_slot, itd_t *node, uint16_t frame);
+bool itd_unlink(volatile uint32_t *frame_slot, itd_t *node);
+
 // Fill an iTD for one frame of high-speed isochronous OUT: up to eight
 // microframe transactions from one contiguous DMA-reachable buffer, len[k]
 // bytes in microframe k (0 = that microframe carries nothing and its

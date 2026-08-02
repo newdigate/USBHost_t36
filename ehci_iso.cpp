@@ -62,6 +62,7 @@ bool sitd_budget_in(uint16_t max_packet, uint8_t start_uframe,
 // 31:5 are the (32-byte aligned) address of the linked structure.
 #define LINK_TERMINATE 0x01u
 #define LINK_TYPE_MASK 0x06u
+#define LINK_TYPE_ITD  0x00u
 #define LINK_TYPE_QH   0x02u
 #define LINK_TYPE_SITD 0x04u
 #define LINK_ADDR_MASK 0xFFFFFFE0u
@@ -245,6 +246,39 @@ void itd_get_txn_status(const itd_t *node, unsigned txn, itd_txn_status_t *out)
 	out->err_babble = (t & ITD_TXN_ERR_BABBLE) != 0u;
 	out->err_xact   = (t & ITD_TXN_ERR_XACT) != 0u;
 	out->length     = (uint16_t)((t >> ITD_TXN_LENGTH_SHIFT) & 0xFFFu);
+}
+
+void itd_link(volatile uint32_t *frame_slot, itd_t *node, uint16_t frame)
+{
+	if (!frame_slot || !node) return;
+	node->next = *frame_slot;
+	node->frame = frame;
+	*frame_slot = ((uint32_t)(uintptr_t)node & LINK_ADDR_MASK) | LINK_TYPE_ITD;
+}
+
+bool itd_unlink(volatile uint32_t *frame_slot, itd_t *node)
+{
+	if (!frame_slot || !node) return false;
+	uint32_t target = ((uint32_t)(uintptr_t)node & LINK_ADDR_MASK) | LINK_TYPE_ITD;
+	volatile uint32_t *link = frame_slot;
+	// Bounded for the same reason sitd_unlink is: interrupt context must
+	// degrade on a corrupt list, not hang. The traversal steps through
+	// whatever it finds -- iTD or siTD -- since both put their next link
+	// at offset 0 (itd_t::next / sitd_t::next), so the reconstructed
+	// uint32_t* is valid either way without knowing which struct it is.
+	for (unsigned guard = 0; guard <= ITD_POOL_SIZE; guard++) {
+		uint32_t cur = *link;
+		if (cur & LINK_TERMINATE) return false;
+		if ((cur & LINK_TYPE_MASK) == LINK_TYPE_QH) return false;
+		if ((cur & (LINK_ADDR_MASK | LINK_TYPE_MASK)) == target) {
+			*link = node->next;
+			node->next = LINK_TERMINATE;
+			return true;
+		}
+		uintptr_t same_region = (uintptr_t)link & ~(uintptr_t)0xFFFFFFFFu;
+		link = (volatile uint32_t *)(same_region | (uintptr_t)(cur & LINK_ADDR_MASK));
+	}
+	return false;
 }
 
 void sitd_link(volatile uint32_t *frame_slot, sitd_t *node, uint16_t frame)

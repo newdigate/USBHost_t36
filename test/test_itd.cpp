@@ -46,6 +46,12 @@ static void test_itd_pool(void)
 
 static uint8_t itd_buf[8192] __attribute__ ((aligned(32)));
 
+// File-scope static so its address shares high bits with the itd/sitd pools
+// (both static, hence BSS) on this 64-bit host -- see test_sitd.cpp's
+// test_skip_iso comment for why sitd_skip_iso's pointer reconstruction
+// depends on that.
+static uint32_t slot;
+
 static void test_fill_out(void)
 {
 	itd_pool_init();
@@ -155,12 +161,63 @@ static void test_txn_status(void)
 	CHECK_EQ(st.active, false);
 }
 
+static void test_link_unlink(void)
+{
+	itd_pool_init();
+	itd_t *a = itd_alloc();
+	itd_t *b = itd_alloc();
+	CHECK_EQ(a != NULL && b != NULL, true);
+
+	slot = 0x01u;                          // empty frame slot (terminate)
+	itd_link(&slot, a, 7);
+	CHECK_EQ(slot & 0x06u, 0x00u);         // type bits: iTD
+	CHECK_EQ(slot & 0xFFFFFFE0u, (uint32_t)(uintptr_t)a & 0xFFFFFFE0u);
+	CHECK_EQ(a->next, 0x01u);
+	CHECK_EQ(a->frame, 7);
+
+	// A second iTD goes in front; the first stays reachable behind it.
+	itd_link(&slot, b, 7);
+	CHECK_EQ((slot & 0xFFFFFFE0u), (uint32_t)(uintptr_t)b & 0xFFFFFFE0u);
+	CHECK_EQ((b->next & 0xFFFFFFE0u), (uint32_t)(uintptr_t)a & 0xFFFFFFE0u);
+
+	// skip_iso walks past both and lands where a QH would attach.
+	CHECK_EQ((void *)sitd_skip_iso(&slot), (void *)&a->next);
+
+	// Unlink tail then head; slot returns to terminate.
+	CHECK_EQ(itd_unlink(&slot, a), true);
+	CHECK_EQ((slot & 0xFFFFFFE0u), (uint32_t)(uintptr_t)b & 0xFFFFFFE0u);
+	CHECK_EQ(b->next, 0x01u);
+	CHECK_EQ(itd_unlink(&slot, b), true);
+	CHECK_EQ(slot, 0x01u);
+	CHECK_EQ(itd_unlink(&slot, a), false);
+
+	// Null arguments are ignored, not dereferenced.
+	itd_link(NULL, a, 0);
+	itd_link(&slot, NULL, 0);
+	CHECK_EQ(slot, 0x01u);
+	CHECK_EQ(itd_unlink(NULL, a), false);
+	CHECK_EQ(itd_unlink(&slot, NULL), false);
+
+	// Mixed run: an siTD in front of an iTD unlinks independently.
+	sitd_pool_init();
+	sitd_t *s = sitd_alloc();
+	itd_link(&slot, a, 9);
+	sitd_link(&slot, s, 9);
+	CHECK_EQ((void *)sitd_skip_iso(&slot), (void *)&a->next);
+	CHECK_EQ(itd_unlink(&slot, a), true);        // unlink the iTD behind the siTD
+	CHECK_EQ((slot & 0xFFFFFFE0u), (uint32_t)(uintptr_t)s & 0xFFFFFFE0u);
+	CHECK_EQ(s->next, 0x01u);
+	CHECK_EQ(sitd_unlink(&slot, s), true);
+	CHECK_EQ(slot, 0x01u);
+}
+
 int main(void)
 {
 	test_itd_layout();
 	test_itd_pool();
 	test_fill_out();
 	test_txn_status();
+	test_link_unlink();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

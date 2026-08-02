@@ -48,6 +48,30 @@ typedef struct sitd_struct {
 #define SITD_TOTAL_BYTES_SHIFT 16u
 #define SITD_IOC_SHIFT         31u
 
+// EHCI 1.0 section 3.3. High-speed isochronous: one iTD per frame carries up
+// to eight microframe transactions -- no splits, the TT is not involved.
+// aligned(32) is the hardware alignment requirement and makes the pool
+// stride a multiple of 32, same reasoning as sitd_t.
+typedef struct itd_struct {
+	uint32_t next;            // next link pointer + type
+	uint32_t transaction[8];  // per-microframe status/control
+	uint32_t bufptr[7];       // page pointers; low bits carry ep/mps/dir
+	// --- software bookkeeping, not read by hardware ---
+	struct itd_struct *next_free;
+	uint16_t frame;           // frame index this iTD is linked into
+	uint16_t reserved;
+} __attribute__ ((aligned(32))) itd_t;
+
+// Transaction word fields, EHCI 1.0 Table 3-3.
+#define ITD_TXN_ACTIVE       0x80000000u
+#define ITD_TXN_ERR_BUFFER   0x40000000u
+#define ITD_TXN_ERR_BABBLE   0x20000000u
+#define ITD_TXN_ERR_XACT     0x10000000u
+#define ITD_TXN_LENGTH_SHIFT 16u        // bits 27:16
+#define ITD_TXN_IOC          0x00008000u
+#define ITD_TXN_PG_SHIFT     12u        // bits 14:12
+#define ITD_TXN_OFFSET_MASK  0x00000FFFu
+
 // Split-transaction budgeting for a full-speed isochronous OUT endpoint.
 // Returns false if the packet cannot be scheduled. On success writes the
 // start-split and complete-split masks.

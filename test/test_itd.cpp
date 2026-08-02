@@ -52,18 +52,20 @@ static void test_fill_out(void)
 	itd_t *n = itd_alloc();
 	CHECK_EQ(n != NULL, true);
 
-	// 8 microframes of 44.1k stereo-into-8ch 24-in-4: 176/208-byte
-	// packets (5 or 6 samples x 8ch x 4B), max packet 208.
+	// Eight mixed-size transactions with a page crossing; the lengths
+	// are chosen to exercise the offset math, not to model a real audio
+	// rate.
 	uint16_t lens[8] = {176, 208, 176, 176, 208, 176, 176, 208};
 	CHECK_EQ(itd_fill_out(n, 3, 1, itd_buf, lens, 208, false), true);
 
-	// bufptr low bits: ep/addr in [0], max packet in [1], OUT + Multi=1
-	// in [2] (EHCI Table 3-6).
+	// bufptr low bits: ep/addr in [0], max packet + direction(OUT) in
+	// [1], Multi=1 in [2] (EHCI Table 3-6).
 	CHECK_EQ(n->bufptr[0] & 0x7F, 3);              // device address
 	CHECK_EQ((n->bufptr[0] >> 8) & 0x0F, 1);       // endpoint
 	CHECK_EQ(n->bufptr[1] & 0x7FF, 208);           // max packet size
-	CHECK_EQ((n->bufptr[2] >> 11) & 1, 0);         // direction OUT
+	CHECK_EQ((n->bufptr[1] >> 11) & 1, 0);         // direction OUT (EHCI: I/O bit lives in bufptr[1])
 	CHECK_EQ(n->bufptr[2] & 3, 1);                 // Multi = 1
+	CHECK_EQ((n->bufptr[2] >> 2) & 0x3FF, 0);      // bufptr[2] low bits: Multi only
 	// page pointers are consecutive 4K pages of one contiguous buffer
 	CHECK_EQ(n->bufptr[0] & 0xFFFFF000u, ((uint32_t)(uintptr_t)itd_buf) & 0xFFFFF000u);
 	CHECK_EQ(n->bufptr[1] & 0xFFFFF000u, ((((uint32_t)(uintptr_t)itd_buf) & 0xFFFFF000u) + 4096u));
@@ -94,6 +96,8 @@ static void test_fill_out(void)
 	CHECK_EQ(itd_fill_out(n, 3, 1, itd_buf, lens, 1025, false), false);
 	CHECK_EQ(itd_fill_out(n, 3, 1, NULL, lens, 208, false), false);
 	CHECK_EQ(itd_fill_out(NULL, 3, 1, itd_buf, lens, 208, false), false);
+	CHECK_EQ(itd_fill_out(n, 3, 16, itd_buf, lens, 208, false), false);
+	CHECK_EQ(itd_fill_out(n, 128, 1, itd_buf, lens, 208, false), false);
 }
 
 int main(void)

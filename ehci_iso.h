@@ -125,8 +125,9 @@ void itd_free(itd_t *node);
 // transaction stays inactive). Page pointers are derived from the buffer
 // being contiguous: page i is page 0 plus i*4K. ioc_last raises IOC on the
 // last active transaction. Returns false (descriptor untouched or unarmed)
-// on nulls, max_packet 0 or >1024, any len[k] > max_packet, all-zero
-// lengths, or a buffer whose span would need more than seven pages.
+// on nulls, max_packet 0 or >1024, endpoint > 15, device address > 127,
+// any len[k] > max_packet, all-zero lengths, or a buffer whose span would
+// need more than seven pages.
 bool itd_fill_out(itd_t *node, uint8_t dev_addr, uint8_t endpoint,
                   const void *buf, const uint16_t len[8], uint16_t max_packet,
                   bool ioc_last);

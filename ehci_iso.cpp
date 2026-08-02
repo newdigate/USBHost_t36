@@ -193,6 +193,7 @@ bool itd_fill_out(itd_t *node, uint8_t dev_addr, uint8_t endpoint,
 {
 	if (!node || !buf || !len) return false;
 	if (max_packet == 0 || max_packet > 1024) return false;
+	if (endpoint > 15 || dev_addr > 127) return false;
 
 	uint32_t base = (uint32_t)(uintptr_t)buf;
 	uint32_t page0 = base & 0xFFFFF000u;
@@ -222,7 +223,9 @@ bool itd_fill_out(itd_t *node, uint8_t dev_addr, uint8_t endpoint,
 	for (int i = 0; i < 7; i++) node->bufptr[i] = page0 + (uint32_t)i * 4096u;
 	node->bufptr[0] |= ((uint32_t)endpoint << 8) | dev_addr;
 	node->bufptr[1] |= max_packet;
-	node->bufptr[2] |= 1u;              // Multi = 1, direction OUT (bit 11 = 0)
+	node->bufptr[2] |= 1u;              // Multi = 1. (Direction is bufptr[1] bit 11 --
+	                                     // stays 0 = OUT because bufptr[1] only ever
+	                                     // receives max_packet, bits 10:0.)
 	return true;
 }
 

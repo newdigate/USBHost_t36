@@ -80,17 +80,22 @@ bool sitd_budget_in(uint16_t max_packet, uint8_t start_uframe,
 // (design spec 2026-08-02-uac2-audio-out-design.md section 4).
 #define ITD_POOL_SIZE  40
 
+// Any iso descriptor from either pool can legally occupy a frame's iso
+// run, so every bounded walker over that run must tolerate the combined
+// worst case, not one pool's.
+#define ISO_RUN_GUARD (SITD_POOL_SIZE + ITD_POOL_SIZE)
+
 volatile uint32_t *sitd_skip_iso(volatile uint32_t *frame_link)
 {
 	if (!frame_link) return frame_link;
 
 	// Bounded because this runs in interrupt context: a corrupted or cyclic
 	// link list would otherwise spin here forever and wedge the system. A
-	// frame can legitimately hold at most SITD_POOL_SIZE isochronous
-	// descriptors, so anything beyond that is corruption. Bailing out returns
-	// a link field that is still safe for the caller to insert at -- worse
-	// scheduling, but not a hang.
-	for (unsigned guard = 0; guard <= SITD_POOL_SIZE; guard++) {
+	// frame can legitimately hold at most ISO_RUN_GUARD isochronous
+	// descriptors (both pools), so anything beyond that is corruption.
+	// Bailing out returns a link field that is still safe for the caller to
+	// insert at -- worse scheduling, but not a hang.
+	for (unsigned guard = 0; guard <= ISO_RUN_GUARD; guard++) {
 		uint32_t link = *frame_link;
 		if ((link & LINK_TERMINATE) || ((link & LINK_TYPE_MASK) == LINK_TYPE_QH)) {
 			return frame_link;
@@ -266,7 +271,7 @@ bool itd_unlink(volatile uint32_t *frame_slot, itd_t *node)
 	// whatever it finds -- iTD or siTD -- since both put their next link
 	// at offset 0 (itd_t::next / sitd_t::next), so the reconstructed
 	// uint32_t* is valid either way without knowing which struct it is.
-	for (unsigned guard = 0; guard <= ITD_POOL_SIZE; guard++) {
+	for (unsigned guard = 0; guard <= ISO_RUN_GUARD; guard++) {
 		uint32_t cur = *link;
 		if (cur & LINK_TERMINATE) return false;
 		if ((cur & LINK_TYPE_MASK) == LINK_TYPE_QH) return false;
@@ -304,7 +309,7 @@ bool sitd_unlink(volatile uint32_t *frame_slot, sitd_t *node)
 
 	// Bounded for the same reason sitd_skip_iso is: this runs in interrupt
 	// context and must degrade rather than hang on a corrupt list.
-	for (unsigned guard = 0; guard <= SITD_POOL_SIZE; guard++) {
+	for (unsigned guard = 0; guard <= ISO_RUN_GUARD; guard++) {
 		uint32_t cur = *link;
 		if (cur & LINK_TERMINATE) return false;
 		if ((cur & LINK_TYPE_MASK) == LINK_TYPE_QH) return false;  // past the iso run

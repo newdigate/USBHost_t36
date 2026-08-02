@@ -22,7 +22,7 @@
 // wrong on device -- the "looks fine, transfers nothing" failure this struct
 // exists to prevent. Matches the Transfer_t pools in USBHost_t36.h.
 typedef struct sitd_struct {
-	uint32_t next;         // next link pointer + type
+	uint32_t next;         // next link + type; MUST stay at offset 0 (mixed-run walkers rely on it)
 	uint32_t ep_char;      // dir, port, hub addr, endpoint, device address
 	uint32_t uframe_mask;  // C-mask (bits 15:8), S-mask (bits 7:0)
 	uint32_t status;       // status, C-prog-mask, bytes to transfer, IOC
@@ -53,7 +53,7 @@ typedef struct sitd_struct {
 // aligned(32) is the hardware alignment requirement and makes the pool
 // stride a multiple of 32, same reasoning as sitd_t.
 typedef struct itd_struct {
-	uint32_t next;            // next link pointer + type
+	uint32_t next;            // next link + type; MUST stay at offset 0 (mixed-run walkers rely on it)
 	uint32_t transaction[8];  // per-microframe status/control
 	uint32_t bufptr[7];       // page pointers; low bits carry ep/mps/dir/mult
 	// --- software bookkeeping, not read by hardware ---
@@ -135,8 +135,8 @@ typedef struct {
 void itd_get_txn_status(const itd_t *node, unsigned txn, itd_txn_status_t *out);
 
 // Link/unlink an iTD in a periodic frame list slot; same head-insertion
-// contract and traversal bounds as the siTD variants above, with the iTD
-// link type (frame-list type bits 00).
+// contract and traversal bounds as the siTD variants (sitd_link/sitd_unlink),
+// with the iTD link type (frame-list type bits 00).
 void itd_link(volatile uint32_t *frame_slot, itd_t *node, uint16_t frame);
 bool itd_unlink(volatile uint32_t *frame_slot, itd_t *node);
 

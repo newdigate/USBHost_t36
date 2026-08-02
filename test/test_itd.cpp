@@ -211,6 +211,49 @@ static void test_link_unlink(void)
 	CHECK_EQ(slot, 0x01u);
 }
 
+// Regression for the traversal-guard bound: a frame's iso run can legally
+// hold nodes from BOTH pools at once, so a walker bounded by only one pool's
+// size could exhaust its guard on a legal list and spuriously report "not
+// found" (see ISO_RUN_GUARD in ehci_iso.cpp). Build the combined worst case
+// -- every node from both pools chained into one slot -- and unlink the one
+// buried deepest, which needs more traversal steps than either pool alone.
+static void test_mixed_run_guard(void)
+{
+	itd_pool_init();
+	sitd_pool_init();
+	slot = 0x01u;
+
+	// Drain the iTD pool first, linking each in turn, so these end up
+	// deepest in the chain: the first one linked (itd_nodes[0]) is pushed
+	// furthest from the head by every link that follows it.
+	itd_t *itd_nodes[64];
+	int n_itd = 0;
+	itd_t *in;
+	while (n_itd < 64 && (in = itd_alloc()) != NULL) {
+		itd_link(&slot, in, 5);
+		itd_nodes[n_itd++] = in;
+	}
+
+	// Then the whole siTD pool on top, so the run's head is all siTDs and
+	// itd_nodes[0] sits behind all of them too.
+	sitd_t *sitd_nodes[64];
+	int n_sitd = 0;
+	sitd_t *sn;
+	while (n_sitd < 64 && (sn = sitd_alloc()) != NULL) {
+		sitd_link(&slot, sn, 5);
+		sitd_nodes[n_sitd++] = sn;
+	}
+	CHECK_EQ(n_itd > 0 && n_sitd > 0, true);
+
+	// itd_nodes[0] is now (n_sitd + n_itd - 1) hops behind the head -- with
+	// both pools at their documented size of 40 that is 79 hops, well past
+	// either pool's size alone (the bug this guards against). A walker
+	// still bounded by one pool's size would give up early and report false.
+	CHECK_EQ(itd_unlink(&slot, itd_nodes[0]), true);
+	CHECK_EQ(itd_nodes[0]->next, 0x01u);
+	if (n_itd > 1) CHECK_EQ(itd_nodes[1]->next, 0x01u);
+}
+
 int main(void)
 {
 	test_itd_layout();
@@ -218,6 +261,7 @@ int main(void)
 	test_fill_out();
 	test_txn_status();
 	test_link_unlink();
+	test_mixed_run_guard();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

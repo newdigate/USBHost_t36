@@ -50,6 +50,12 @@ public:
     // to drop or retry. This is the seam the Audio library adapter writes to.
     uint32_t write(const int16_t *samples, uint32_t count);
     uint32_t available() const;          // free space, in samples
+    uint32_t queued() const;             // samples waiting to go out
+
+    // The negotiated format. A graph feeding this must produce at rate(),
+    // not at whatever it defaults to -- see AudioOutputUSBHost.
+    uint32_t rate() const { return req_rate; }
+    uint8_t  channels() const { return req_channels; }
 
     // Called once per USB frame consumed, from service(). The Audio library
     // adapter uses this to run the graph, which makes the USB frame clock the

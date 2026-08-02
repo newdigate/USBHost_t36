@@ -193,6 +193,11 @@ uint32_t USBAudioOut::available() const
 	return usb_audio_fifo_free(&fifo);
 }
 
+uint32_t USBAudioOut::queued() const
+{
+	return usb_audio_fifo_used(&fifo);
+}
+
 bool USBAudioOut::beginStreaming()
 {
 	if (is_streaming) return true;

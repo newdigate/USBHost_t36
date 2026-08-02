@@ -278,6 +278,14 @@ static void test_fill_out(void)
 	sitd_get_status(n, &st);
 	CHECK_EQ(st.active, false);
 	CHECK_EQ(st.bytes_left, 0);
+
+	// Field-width guards, mirroring itd_fill_out: endpoint is 4 bits,
+	// device address 7 -- oversized values would bleed into ep_char
+	// neighbours.
+	CHECK_EQ(sitd_fill_out(n, 3, 16, 0, 0, fill_buf, 192, 0, false), false);
+	CHECK_EQ(sitd_fill_out(n, 128, 4, 0, 0, fill_buf, 192, 0, false), false);
+	CHECK_EQ(sitd_fill_in(n, 3, 16, 0, 0, fill_buf, 8, 0, false), false);
+	CHECK_EQ(sitd_fill_in(n, 128, 2, 0, 0, fill_buf, 8, 0, false), false);
 }
 
 static void test_budget_in(void)

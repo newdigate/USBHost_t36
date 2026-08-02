@@ -119,6 +119,21 @@ void itd_pool_init(void);
 itd_t *itd_alloc(void);
 void itd_free(itd_t *node);
 
+// Per-transaction completion status, read back after the controller has
+// processed a microframe. For OUT the controller does not write the length
+// back, so `length` is meaningful before the transaction runs (bytes to
+// send) and after an IN (bytes received); errors and active are what the
+// harvest loop keys on. Null node or txn > 7 reports inactive/clean/zero.
+typedef struct {
+	bool     active;
+	bool     err_xact;
+	bool     err_babble;
+	bool     err_buffer;
+	uint16_t length;
+} itd_txn_status_t;
+
+void itd_get_txn_status(const itd_t *node, unsigned txn, itd_txn_status_t *out);
+
 // Fill an iTD for one frame of high-speed isochronous OUT: up to eight
 // microframe transactions from one contiguous DMA-reachable buffer, len[k]
 // bytes in microframe k (0 = that microframe carries nothing and its
@@ -150,7 +165,8 @@ bool itd_fill_out(itd_t *node, uint8_t dev_addr, uint8_t endpoint,
 //
 // `buf` must be DMA-reachable (USBHOST_DMAMEM on RT1176) and is not copied.
 // Returns false if the transfer cannot be scheduled, in which case the siTD is
-// left inactive rather than half-built.
+// left inactive rather than half-built. Rejects endpoint > 15 and device
+// address > 127, whose encodings would bleed into neighbouring ep_char fields.
 bool sitd_fill_out(sitd_t *node, uint8_t dev_addr, uint8_t endpoint,
                    uint8_t hub_addr, uint8_t port, const void *buf,
                    uint16_t len, uint8_t start_uframe, bool ioc);
@@ -160,7 +176,8 @@ bool sitd_fill_out(sitd_t *node, uint8_t dev_addr, uint8_t endpoint,
 // less, and the caller computes received = len - status.bytes_left after
 // completion. TP/T-count are OUT-only fields (EHCI 1.0 Table 3-12), so buf1
 // carries only the next-page pointer. The UAC1 feedback endpoint (3 bytes
-// every 2^bRefresh ms) is the intended user.
+// every 2^bRefresh ms) is the intended user. Rejects endpoint > 15 and device
+// address > 127, whose encodings would bleed into neighbouring ep_char fields.
 bool sitd_fill_in(sitd_t *node, uint8_t dev_addr, uint8_t endpoint,
                   uint8_t hub_addr, uint8_t port, void *buf,
                   uint16_t len, uint8_t start_uframe, bool ioc);

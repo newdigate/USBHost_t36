@@ -231,6 +231,22 @@ bool itd_fill_out(itd_t *node, uint8_t dev_addr, uint8_t endpoint,
 	return true;
 }
 
+void itd_get_txn_status(const itd_t *node, unsigned txn, itd_txn_status_t *out)
+{
+	if (!out) return;
+	if (!node || txn > 7) {
+		out->active = out->err_xact = out->err_babble = out->err_buffer = false;
+		out->length = 0;
+		return;
+	}
+	uint32_t t = node->transaction[txn];
+	out->active     = (t & ITD_TXN_ACTIVE) != 0u;
+	out->err_buffer = (t & ITD_TXN_ERR_BUFFER) != 0u;
+	out->err_babble = (t & ITD_TXN_ERR_BABBLE) != 0u;
+	out->err_xact   = (t & ITD_TXN_ERR_XACT) != 0u;
+	out->length     = (uint16_t)((t >> ITD_TXN_LENGTH_SHIFT) & 0xFFFu);
+}
+
 void sitd_link(volatile uint32_t *frame_slot, sitd_t *node, uint16_t frame)
 {
 	if (!frame_slot || !node) return;
@@ -285,6 +301,7 @@ bool sitd_fill_out(sitd_t *node, uint8_t dev_addr, uint8_t endpoint,
                    uint16_t len, uint8_t start_uframe, bool ioc)
 {
 	if (!node || !buf) return false;
+	if (endpoint > 15 || dev_addr > 127) return false;
 
 	uint8_t smask = 0, cmask = 0;
 	if (!sitd_budget_out(len, start_uframe, &smask, &cmask)) return false;
@@ -326,6 +343,7 @@ bool sitd_fill_in(sitd_t *node, uint8_t dev_addr, uint8_t endpoint,
                   uint16_t len, uint8_t start_uframe, bool ioc)
 {
 	if (!node || !buf) return false;
+	if (endpoint > 15 || dev_addr > 127) return false;
 
 	uint8_t smask = 0, cmask = 0;
 	if (!sitd_budget_in(len, start_uframe, &smask, &cmask)) return false;

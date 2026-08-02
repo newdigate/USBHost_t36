@@ -130,11 +130,37 @@ static void test_fill_out(void)
 	CHECK_EQ(n->transaction[1] & ITD_TXN_OFFSET_MASK, (((uintptr_t)near_end & 0xFFFu) + 176u) & 0xFFFu);
 }
 
+static void test_txn_status(void)
+{
+	itd_pool_init();
+	itd_t *n = itd_alloc();
+	uint16_t lens[8] = {176, 176, 176, 176, 176, 176, 176, 176};
+	CHECK_EQ(itd_fill_out(n, 3, 1, itd_buf, lens, 208, false), true);
+
+	itd_txn_status_t st;
+	itd_get_txn_status(n, 0, &st);
+	CHECK_EQ(st.active, true);
+	CHECK_EQ(st.err_xact || st.err_babble || st.err_buffer, false);
+	CHECK_EQ(st.length, 176);
+
+	// controller retires transaction 2 with a babble error
+	n->transaction[2] = (n->transaction[2] & ~ITD_TXN_ACTIVE) | ITD_TXN_ERR_BABBLE;
+	itd_get_txn_status(n, 2, &st);
+	CHECK_EQ(st.active, false);
+	CHECK_EQ(st.err_babble, true);
+
+	itd_get_txn_status(NULL, 0, &st);      // nulls tolerated
+	CHECK_EQ(st.active, false);
+	itd_get_txn_status(n, 8, &st);         // txn index out of range
+	CHECK_EQ(st.active, false);
+}
+
 int main(void)
 {
 	test_itd_layout();
 	test_itd_pool();
 	test_fill_out();
+	test_txn_status();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

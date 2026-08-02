@@ -44,10 +44,63 @@ static void test_itd_pool(void)
 	CHECK_EQ((void *)itd_alloc(), (void *)seen[0]);
 }
 
+static uint8_t itd_buf[2048] __attribute__ ((aligned(32)));
+
+static void test_fill_out(void)
+{
+	itd_pool_init();
+	itd_t *n = itd_alloc();
+	CHECK_EQ(n != NULL, true);
+
+	// 8 microframes of 44.1k stereo-into-8ch 24-in-4: 176/208-byte
+	// packets (5 or 6 samples x 8ch x 4B), max packet 208.
+	uint16_t lens[8] = {176, 208, 176, 176, 208, 176, 176, 208};
+	CHECK_EQ(itd_fill_out(n, 3, 1, itd_buf, lens, 208, false), true);
+
+	// bufptr low bits: ep/addr in [0], max packet in [1], OUT + Multi=1
+	// in [2] (EHCI Table 3-6).
+	CHECK_EQ(n->bufptr[0] & 0x7F, 3);              // device address
+	CHECK_EQ((n->bufptr[0] >> 8) & 0x0F, 1);       // endpoint
+	CHECK_EQ(n->bufptr[1] & 0x7FF, 208);           // max packet size
+	CHECK_EQ((n->bufptr[2] >> 11) & 1, 0);         // direction OUT
+	CHECK_EQ(n->bufptr[2] & 3, 1);                 // Multi = 1
+	// page pointers are consecutive 4K pages of one contiguous buffer
+	CHECK_EQ(n->bufptr[0] & 0xFFFFF000u, ((uint32_t)(uintptr_t)itd_buf) & 0xFFFFF000u);
+	CHECK_EQ(n->bufptr[1] & 0xFFFFF000u, ((((uint32_t)(uintptr_t)itd_buf) & 0xFFFFF000u) + 4096u));
+
+	// transaction 0: active, len 176, PG 0, offset = buf offset in page
+	uint32_t t0 = n->transaction[0];
+	CHECK_EQ(t0 & ITD_TXN_ACTIVE, ITD_TXN_ACTIVE);
+	CHECK_EQ((t0 >> ITD_TXN_LENGTH_SHIFT) & 0xFFF, 176);
+	CHECK_EQ((t0 >> ITD_TXN_PG_SHIFT) & 7, 0);
+	CHECK_EQ(t0 & ITD_TXN_OFFSET_MASK, ((uint32_t)(uintptr_t)itd_buf) & 0xFFF);
+	CHECK_EQ(t0 & ITD_TXN_IOC, 0);
+
+	// cumulative offsets: transaction 1 starts 176 bytes in
+	uint32_t addr1 = (((uint32_t)(uintptr_t)itd_buf) & 0xFFF) + 176;
+	CHECK_EQ((n->transaction[1] >> ITD_TXN_PG_SHIFT) & 7, addr1 >> 12);
+	CHECK_EQ(n->transaction[1] & ITD_TXN_OFFSET_MASK, addr1 & 0xFFF);
+
+	// a zero-length microframe stays inactive
+	uint16_t lens2[8] = {176, 0, 176, 176, 176, 176, 176, 176};
+	CHECK_EQ(itd_fill_out(n, 3, 1, itd_buf, lens2, 208, true), true);
+	CHECK_EQ(n->transaction[1], 0);
+	// ioc lands on the LAST active transaction
+	CHECK_EQ(n->transaction[7] & ITD_TXN_IOC, ITD_TXN_IOC);
+
+	// rejections: len > max packet, mps > 1024, nulls
+	uint16_t bad[8] = {209, 0, 0, 0, 0, 0, 0, 0};
+	CHECK_EQ(itd_fill_out(n, 3, 1, itd_buf, bad, 208, false), false);
+	CHECK_EQ(itd_fill_out(n, 3, 1, itd_buf, lens, 1025, false), false);
+	CHECK_EQ(itd_fill_out(n, 3, 1, NULL, lens, 208, false), false);
+	CHECK_EQ(itd_fill_out(NULL, 3, 1, itd_buf, lens, 208, false), false);
+}
+
 int main(void)
 {
 	test_itd_layout();
 	test_itd_pool();
+	test_fill_out();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

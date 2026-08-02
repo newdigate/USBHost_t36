@@ -119,6 +119,18 @@ void itd_pool_init(void);
 itd_t *itd_alloc(void);
 void itd_free(itd_t *node);
 
+// Fill an iTD for one frame of high-speed isochronous OUT: up to eight
+// microframe transactions from one contiguous DMA-reachable buffer, len[k]
+// bytes in microframe k (0 = that microframe carries nothing and its
+// transaction stays inactive). Page pointers are derived from the buffer
+// being contiguous: page i is page 0 plus i*4K. ioc_last raises IOC on the
+// last active transaction. Returns false (descriptor untouched or unarmed)
+// on nulls, max_packet 0 or >1024, any len[k] > max_packet, all-zero
+// lengths, or a buffer whose span would need more than seven pages.
+bool itd_fill_out(itd_t *node, uint8_t dev_addr, uint8_t endpoint,
+                  const void *buf, const uint16_t len[8], uint16_t max_packet,
+                  bool ioc_last);
+
 // Link an siTD into one periodic frame list slot, at the head of that frame's
 // list. `frame_slot` is &periodictable[frame]; the caller owns the table.
 //

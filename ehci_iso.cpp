@@ -75,6 +75,8 @@ bool sitd_budget_in(uint16_t max_packet, uint8_t start_uframe,
 // pipe could never be armed. Also the bound on how many isochronous
 // descriptors one frame can hold (see sitd_skip_iso).
 #define SITD_POOL_SIZE 40
+// Same count for the HS ring: 32 periodic slots + feedback + headroom
+// (design spec 2026-08-02-uac2-audio-out-design.md section 4).
 #define ITD_POOL_SIZE  40
 
 volatile uint32_t *sitd_skip_iso(volatile uint32_t *frame_link)
@@ -183,6 +185,45 @@ void itd_free(itd_t *node)
 	if (!node) return;
 	node->next_free = itd_free_list;
 	itd_free_list = node;
+}
+
+bool itd_fill_out(itd_t *node, uint8_t dev_addr, uint8_t endpoint,
+                  const void *buf, const uint16_t len[8], uint16_t max_packet,
+                  bool ioc_last)
+{
+	if (!node || !buf || !len) return false;
+	if (max_packet == 0 || max_packet > 1024) return false;
+
+	uint32_t base = (uint32_t)(uintptr_t)buf;
+	uint32_t page0 = base & 0xFFFFF000u;
+
+	int last_active = -1;
+	uint32_t off = base & 0xFFFu;
+	uint32_t txn[8];
+	for (int k = 0; k < 8; k++) {
+		if (len[k] == 0) { txn[k] = 0; continue; }
+		if (len[k] > max_packet) return false;
+		uint32_t pg = off >> 12;
+		if (pg > 6) return false;   // contiguous buffer outran the pages
+		txn[k] = ITD_TXN_ACTIVE
+		       | ((uint32_t)len[k] << ITD_TXN_LENGTH_SHIFT)
+		       | (pg << ITD_TXN_PG_SHIFT)
+		       | (off & ITD_TXN_OFFSET_MASK);
+		last_active = k;
+		off += len[k];
+	}
+	if (last_active < 0) return false;
+	if (ioc_last) txn[last_active] |= ITD_TXN_IOC;
+
+	for (int k = 0; k < 8; k++) node->transaction[k] = txn[k];
+
+	// Contiguous payload means consecutive physical pages: page i is
+	// page0 + i*4K. Low bits per EHCI Table 3-6.
+	for (int i = 0; i < 7; i++) node->bufptr[i] = page0 + (uint32_t)i * 4096u;
+	node->bufptr[0] |= ((uint32_t)endpoint << 8) | dev_addr;
+	node->bufptr[1] |= max_packet;
+	node->bufptr[2] |= 1u;              // Multi = 1, direction OUT (bit 11 = 0)
+	return true;
 }
 
 void sitd_link(volatile uint32_t *frame_slot, sitd_t *node, uint16_t frame)

@@ -10,6 +10,11 @@
 
 #define UAC1_MAX_ALTS 16
 
+// Discrete sample rates recorded per alternate setting. UAC1 allows up to 255;
+// real devices list a handful. Anything beyond this is dropped, and rate_count
+// saturates -- see uac1_alt_supports_rate().
+#define UAC1_MAX_RATES 8
+
 struct UAC1AltSetting {
 	uint8_t  alternate_setting;
 	uint8_t  endpoint_address;
@@ -18,12 +23,34 @@ struct UAC1AltSetting {
 	uint8_t  channels;
 	uint8_t  subframe_size;
 	uint8_t  bit_resolution;
-	// Only the first discrete frequency (tSamFreq[0]) is recorded when a
-	// format descriptor lists several. Devices using a continuous min/max
-	// range (bSamFreqType == 0) are not supported and leave this 0, making
-	// the alt setting unmatchable by uac1_find_alt.
-	uint32_t sample_rate;
+
+	// Sample rates. UAC1 devices use one of two idioms and both occur in
+	// the wild: one rate per alternate setting (Logitech 046D:0A8F lists
+	// eight alts), or several rates in one setting (Jabra 0B0E:2301 lists
+	// 8000/16000/32000/44100/48000 in a single alt). A parser that only
+	// reads tSamFreq[0] sees the second kind as an 8 kHz-only device.
+	//
+	// rate_count > 0: `rates` holds that many discrete frequencies.
+	// rate_count == 0: the device advertises a continuous range, and
+	//                  rate_min/rate_max bound it.
+	uint8_t  rate_count;
+	uint32_t rates[UAC1_MAX_RATES];
+	uint32_t rate_min;
+	uint32_t rate_max;
+	// bmAttributes from the class-specific AS isochronous endpoint descriptor
+	// (CS_ENDPOINT / EP_GENERAL). Bit 0 is the sampling frequency control.
+	uint8_t  ep_controls;
 };
+
+// True if this alternate setting can carry `rate`, by either idiom. Selecting
+// the alt is not sufficient for a multi-rate or continuous setting -- the rate
+// must also be set with a SET_CUR sampling-frequency request on the endpoint.
+bool uac1_alt_supports_rate(const UAC1AltSetting *alt, uint32_t rate);
+
+// True when the host must issue a class-specific SET_CUR SAMPLING_FREQ request
+// to the endpoint after SET_INTERFACE, because the alternate setting alone does
+// not determine the rate.
+bool uac1_alt_needs_rate_request(const UAC1AltSetting *alt);
 
 struct UAC1Topology {
 	uint16_t bcd_adc;

@@ -5,6 +5,8 @@
 
 #define DT_INTERFACE       0x04
 #define DT_ENDPOINT        0x05
+#define DT_CS_ENDPOINT     0x25
+#define AS_EP_GENERAL      0x01
 #define DT_CS_INTERFACE    0x24
 #define AC_HEADER          0x01
 #define AC_OUTPUT_TERMINAL 0x03
@@ -94,16 +96,31 @@ bool uac1_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out)
 				alt->subframe_size  = b[5];
 				alt->bit_resolution = b[6];
 				// bSamFreqType == 0 means a continuous min/max range
-				// (tSamFreqMin/tSamFreqMax), which this parser does not
-				// support; sample_rate is left 0 and the alt becomes
-				// unmatchable by uac1_find_alt. bSamFreqType >= 1 gives a
-				// list of tSamFreq[bSamFreqType] discrete frequencies; only
-				// the first, tSamFreq[0], is recorded.
-				if (b[7] >= 1)
-					alt->sample_rate = (uint32_t)b[8]
-					                 | ((uint32_t)b[9] << 8)
-					                 | ((uint32_t)b[10] << 16);
+				// (tSamFreqMin/tSamFreqMax). Otherwise it is a count of
+				// discrete frequencies, each three bytes little-endian
+				// from b[8].
+				uint8_t nfreq = b[7];
+				if (nfreq == 0) {
+					if (l >= 14) {
+						alt->rate_count = 0;
+						alt->rate_min = (uint32_t)b[8] | ((uint32_t)b[9] << 8)
+						              | ((uint32_t)b[10] << 16);
+						alt->rate_max = (uint32_t)b[11] | ((uint32_t)b[12] << 8)
+						              | ((uint32_t)b[13] << 16);
+					}
+				} else {
+					for (uint8_t k = 0; k < nfreq && alt->rate_count < UAC1_MAX_RATES; k++) {
+						uint32_t o = 8u + 3u * (uint32_t)k;
+						if (o + 2u >= (uint32_t)l) break;   // descriptor truncated
+						alt->rates[alt->rate_count++] =
+							(uint32_t)b[o] | ((uint32_t)b[o + 1] << 8)
+							| ((uint32_t)b[o + 2] << 16);
+					}
+				}
 			}
+		} else if (t == DT_CS_ENDPOINT && l >= 4 && in_stream && alt
+		           && b[2] == AS_EP_GENERAL) {
+			alt->ep_controls = b[3];
 		} else if (t == DT_ENDPOINT && l >= 7 && in_stream && alt) {
 			alt->endpoint_address    = b[2];
 			alt->endpoint_attributes = b[3];
@@ -120,14 +137,44 @@ bool uac1_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out)
 	return out->alt_count > 0;
 }
 
+bool uac1_alt_supports_rate(const UAC1AltSetting *alt, uint32_t rate)
+{
+	if (!alt || rate == 0) return false;
+
+	if (alt->rate_count == 0) {
+		// Continuous range. Both bounds zero means the format descriptor
+		// was missing or malformed, which is not the same as "any rate".
+		if (alt->rate_min == 0 && alt->rate_max == 0) return false;
+		return rate >= alt->rate_min && rate <= alt->rate_max;
+	}
+
+	for (uint8_t i = 0; i < alt->rate_count; i++) {
+		if (alt->rates[i] == rate) return true;
+	}
+	return false;
+}
+
+bool uac1_alt_needs_rate_request(const UAC1AltSetting *alt)
+{
+	if (!alt) return false;
+	// Bit 0 of the class-specific endpoint bmAttributes is the sampling
+	// frequency control. Without it the device has no way to be told a rate,
+	// so the alternate setting is all there is.
+	if (!(alt->ep_controls & 0x01)) return false;
+	// A single discrete rate is already fully determined by the alt setting.
+	return alt->rate_count != 1;
+}
+
 int uac1_find_alt(const UAC1Topology *t, uint32_t rate, uint8_t channels, uint8_t bits)
 {
 	if (!t) return -1;
 	for (uint8_t k = 0; k < t->alt_count; k++) {
 		const UAC1AltSetting *a = &t->alts[k];
-		if (a->sample_rate == rate && a->channels == channels &&
-		    a->bit_resolution == bits && a->endpoint_address != 0)
-			return (int)a->alternate_setting;
+		if (a->endpoint_address == 0) continue;      // zero-bandwidth alt 0
+		if (a->channels != channels) continue;
+		if (a->bit_resolution != bits) continue;
+		if (!uac1_alt_supports_rate(a, rate)) continue;
+		return (int)a->alternate_setting;
 	}
 	return -1;
 }

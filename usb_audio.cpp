@@ -34,17 +34,58 @@ bool USBAudioOut::claim(Device_t *dev, int type, const uint8_t *descriptors, uin
 
 	// Do not assign `device` here -- claim_drivers() sets it after we
 	// return true.
-	active_alt = -1;         // becomes valid once SET_INTERFACE completes
+	active_alt = -1;         // becomes valid once configuration completes
 	pending_alt = alt;
-	if (!USBHost::setInterface(dev, setup, topo.streaming_interface, (uint8_t)alt, this))
+	ctrl_state = CTRL_SET_INTERFACE;
+	if (!USBHost::setInterface(dev, setup, topo.streaming_interface, (uint8_t)alt, this)) {
+		ctrl_state = CTRL_IDLE;
 		return false;
+	}
 	return true;
+}
+
+const UAC1AltSetting *USBAudioOut::findAlt(int alt_number) const
+{
+	if (alt_number < 0) return 0;
+	for (uint8_t i = 0; i < topo.alt_count; i++) {
+		if (topo.alts[i].alternate_setting == (uint8_t)alt_number)
+			return &topo.alts[i];
+	}
+	return 0;
+}
+
+// Class-specific SET_CUR of SAMPLING_FREQ_CONTROL on the streaming endpoint
+// (UAC1 5.2.3.2). The rate is three bytes little-endian, not four.
+//
+// Needed because an alternate setting that offers several rates -- the Jabra
+// 0B0E:2301 offers five in one alt -- leaves the device at whatever rate it
+// last had. Without this the stream plays at the wrong speed rather than
+// failing, which is much harder to notice.
+bool USBAudioOut::requestSampleRate(const UAC1AltSetting *alt)
+{
+	if (!alt || !device) return false;
+	rate_buf[0] = (uint8_t)(req_rate & 0xFF);
+	rate_buf[1] = (uint8_t)((req_rate >> 8) & 0xFF);
+	rate_buf[2] = (uint8_t)((req_rate >> 16) & 0xFF);
+	mk_setup(setup, 0x22, 0x01, 0x0100, alt->endpoint_address, 3);
+	return queue_Control_Transfer(device, &setup, rate_buf, this);
 }
 
 void USBAudioOut::control(const Transfer_t *transfer)
 {
-	// The only control transfer this driver issues so far is SET_INTERFACE.
 	(void)transfer;
+
+	if (ctrl_state == CTRL_SET_INTERFACE) {
+		const UAC1AltSetting *alt = findAlt(pending_alt);
+		if (uac1_alt_needs_rate_request(alt) && requestSampleRate(alt)) {
+			ctrl_state = CTRL_SET_RATE;
+			return;      // active_alt stays invalid until the rate lands
+		}
+	}
+
+	// Either the device needed no rate request, or the rate request just
+	// completed. Nothing else issues control transfers on this driver.
+	ctrl_state = CTRL_IDLE;
 	active_alt = pending_alt;
 }
 
@@ -52,6 +93,7 @@ void USBAudioOut::disconnect()
 {
 	active_alt = -1;
 	pending_alt = -1;
+	ctrl_state = CTRL_IDLE;
 	memset(&topo, 0, sizeof(topo));
 }
 
@@ -68,13 +110,7 @@ bool USBAudioOut::postTestPacket(uint16_t len)
 	if (len == 0 || len > sizeof(test_buf)) return false;
 
 	// Find the alternate setting we activated, for its endpoint address.
-	const UAC1AltSetting *alt = 0;
-	for (uint8_t i = 0; i < topo.alt_count; i++) {
-		if (topo.alts[i].alternate_setting == (uint8_t)active_alt) {
-			alt = &topo.alts[i];
-			break;
-		}
-	}
+	const UAC1AltSetting *alt = findAlt(active_alt);
 	if (!alt || alt->endpoint_address == 0) return false;
 
 	if (!test_sitd) {
@@ -162,13 +198,7 @@ bool USBAudioOut::beginStreaming()
 	if (is_streaming) return true;
 	if (active_alt < 0 || !device) return false;
 
-	const UAC1AltSetting *alt = 0;
-	for (uint8_t i = 0; i < topo.alt_count; i++) {
-		if (topo.alts[i].alternate_setting == (uint8_t)active_alt) {
-			alt = &topo.alts[i];
-			break;
-		}
-	}
+	const UAC1AltSetting *alt = findAlt(active_alt);
 	if (!alt || alt->endpoint_address == 0) return false;
 	iso_endpoint = alt->endpoint_address & 0x0F;
 

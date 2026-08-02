@@ -76,7 +76,8 @@ static void test_collects_alt_settings(void)
 
 	// alt 7 is 48 kHz stereo 16-bit
 	CHECK_EQ(t.alts[7].alternate_setting, 7);
-	CHECK_EQ(t.alts[7].sample_rate, 48000);
+	CHECK_EQ(t.alts[7].rate_count, 1);
+	CHECK_EQ(t.alts[7].rates[0], 48000);
 	CHECK_EQ(t.alts[7].channels, 2);
 	CHECK_EQ(t.alts[7].bit_resolution, 16);
 	CHECK_EQ(t.alts[7].subframe_size, 2);
@@ -86,7 +87,8 @@ static void test_collects_alt_settings(void)
 	CHECK_EQ(t.alts[7].endpoint_attributes, 0x09);
 
 	// alt 6 is 44.1 kHz stereo 16-bit
-	CHECK_EQ(t.alts[6].sample_rate, 44100);
+	CHECK_EQ(t.alts[6].rate_count, 1);
+	CHECK_EQ(t.alts[6].rates[0], 44100);
 	CHECK_EQ(t.alts[6].max_packet_size, 228);
 }
 
@@ -262,6 +264,112 @@ static void test_frame_bytes(void)
 	CHECK_EQ(uac1_frame_bytes(&acc, 48000, 2, 0), 0);
 }
 
+static uint8_t jabra[4096];
+static size_t jabra_len;
+
+// Jabra 0B0E:2301, captured from the device with the descriptor survey. It
+// uses the other UAC1 rate idiom: five discrete rates in ONE alternate
+// setting, where the Logitech uses one rate per alt across eight of them.
+// A parser reading only tSamFreq[0] sees this as an 8 kHz-only device.
+static void test_multirate_device(void)
+{
+	FILE *f = fopen("fixtures/jabra_uac1_multirate.bin", "rb");
+	if (!f) { printf("FAIL cannot open jabra fixture\n"); failures++; return; }
+	jabra_len = fread(jabra, 1, sizeof(jabra), f);
+	fclose(f);
+	CHECK_EQ(jabra_len, 272);
+
+	UAC1Topology t;
+	CHECK(uac1_parse_config(jabra, jabra_len, &t));
+	CHECK_EQ(t.bcd_adc, 0x0100);
+	CHECK_EQ(t.streaming_interface, 2);      // interface 1 is the microphone
+
+	// Two alts: 0 is zero-bandwidth, 1 carries the stream.
+	CHECK_EQ(t.alt_count, 2);
+	CHECK_EQ(t.alts[1].endpoint_address, 0x04);
+	CHECK_EQ(t.alts[1].channels, 1);         // mono
+	CHECK_EQ(t.alts[1].bit_resolution, 16);
+
+	// All five rates must be recorded, not just the first.
+	CHECK_EQ(t.alts[1].rate_count, 5);
+	CHECK_EQ(t.alts[1].rates[0], 8000);
+	CHECK_EQ(t.alts[1].rates[1], 16000);
+	CHECK_EQ(t.alts[1].rates[2], 32000);
+	CHECK_EQ(t.alts[1].rates[3], 44100);
+	CHECK_EQ(t.alts[1].rates[4], 48000);
+
+	// The bug this fixture exists for: 44.1 kHz is in the list, so a mono
+	// 16-bit request at 44100 must match. Before the fix this returned -1
+	// because only tSamFreq[0] (8000) was stored.
+	CHECK_EQ(uac1_find_alt(&t, 44100, 1, 16), 1);
+	CHECK_EQ(uac1_find_alt(&t, 48000, 1, 16), 1);
+	CHECK_EQ(uac1_find_alt(&t,  8000, 1, 16), 1);
+	CHECK_EQ(uac1_find_alt(&t, 96000, 1, 16), -1);   // not offered
+	CHECK_EQ(uac1_find_alt(&t, 44100, 2, 16), -1);   // mono device, not stereo
+
+	// The device advertises the sampling frequency control (CS_ENDPOINT
+	// bmAttributes bit 0), and offers five rates, so SET_INTERFACE alone
+	// leaves the rate undetermined -- the host must also issue SET_CUR.
+	CHECK_EQ(t.alts[1].ep_controls, 0x01);
+	CHECK_EQ(uac1_alt_needs_rate_request(&t.alts[1]), true);
+}
+
+static void test_needs_rate_request(void)
+{
+	UAC1AltSetting a = {};
+
+	// One rate, control present: the alt setting already fixes the rate.
+	a.ep_controls = 0x01; a.rate_count = 1; a.rates[0] = 48000;
+	CHECK_EQ(uac1_alt_needs_rate_request(&a), false);
+
+	// Several rates, control present: must be told which one.
+	a.rate_count = 2; a.rates[1] = 44100;
+	CHECK_EQ(uac1_alt_needs_rate_request(&a), true);
+
+	// Continuous range, control present.
+	UAC1AltSetting c = {};
+	c.ep_controls = 0x01; c.rate_count = 0; c.rate_min = 8000; c.rate_max = 48000;
+	CHECK_EQ(uac1_alt_needs_rate_request(&c), true);
+
+	// No sampling frequency control: nothing to send, whatever the rate list
+	// says. Sending SET_CUR to a device that does not implement the control
+	// risks a stall, so this must stay false.
+	UAC1AltSetting n = {};
+	n.ep_controls = 0x00; n.rate_count = 3;
+	CHECK_EQ(uac1_alt_needs_rate_request(&n), false);
+
+	CHECK_EQ(uac1_alt_needs_rate_request(0), false);
+}
+
+static void test_supports_rate(void)
+{
+	UAC1AltSetting a = {};
+
+	// Discrete list.
+	a.rate_count = 3;
+	a.rates[0] = 44100; a.rates[1] = 48000; a.rates[2] = 96000;
+	CHECK_EQ(uac1_alt_supports_rate(&a, 44100), true);
+	CHECK_EQ(uac1_alt_supports_rate(&a, 96000), true);
+	CHECK_EQ(uac1_alt_supports_rate(&a, 22050), false);
+
+	// Continuous range: rate_count 0 with bounds.
+	UAC1AltSetting c = {};
+	c.rate_count = 0; c.rate_min = 8000; c.rate_max = 48000;
+	CHECK_EQ(uac1_alt_supports_rate(&c, 8000), true);
+	CHECK_EQ(uac1_alt_supports_rate(&c, 44100), true);
+	CHECK_EQ(uac1_alt_supports_rate(&c, 48000), true);
+	CHECK_EQ(uac1_alt_supports_rate(&c, 7999), false);
+	CHECK_EQ(uac1_alt_supports_rate(&c, 48001), false);
+
+	// Both bounds zero means the format descriptor was missing, which must
+	// not be read as "accepts anything".
+	UAC1AltSetting z = {};
+	CHECK_EQ(uac1_alt_supports_rate(&z, 44100), false);
+
+	CHECK_EQ(uac1_alt_supports_rate(0, 44100), false);
+	CHECK_EQ(uac1_alt_supports_rate(&a, 0), false);
+}
+
 int main(void)
 {
 	load_fixture();
@@ -272,6 +380,9 @@ int main(void)
 	test_resolves_speaker_feature_unit();
 	test_finds_alt_by_format();
 	test_frame_bytes();
+	test_multirate_device();
+	test_supports_rate();
+	test_needs_rate_request();
 	test_parses_without_config_header();
 	test_survives_hostile_input();
 	printf("%d checks, %d failures\n", checks, failures);

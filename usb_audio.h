@@ -91,8 +91,25 @@ private:
     uint8_t  req_bits     = 16;
     int      active_alt   = -1;
     int      pending_alt  = -1;
+
+    // Two-step configuration: SET_INTERFACE always, then SET_CUR
+    // SAMPLING_FREQ on devices whose alternate setting does not by itself
+    // determine the rate. active_alt only becomes valid once the last step
+    // completes, so ready() stays false until the device is really at
+    // req_rate.
+    enum CtrlState { CTRL_IDLE, CTRL_SET_INTERFACE, CTRL_SET_RATE };
+    CtrlState ctrl_state = CTRL_IDLE;
+    uint8_t  rate_buf[3];   // SET_CUR payload, 24-bit LE rate; needs DMA reach
+
     setup_t  setup;   // must outlive the control transfer
-    Transfer_t mytransfers[2] __attribute__ ((aligned(32)));
+    // queue_Control_Transfer() takes two Transfer_t for a setup-only request
+    // and three when there is a data stage. control() runs before the
+    // completed transfers are freed (followup_Transfer calls back, the caller
+    // frees afterwards), so issuing SET_CUR from the SET_INTERFACE callback
+    // has both in flight at once: 2 + 3. The pool is shared across drivers, so
+    // undersizing this fails only intermittently, when nothing else has
+    // contributed spares.
+    Transfer_t mytransfers[5] __attribute__ ((aligned(32)));
 
     // Task 4 scaffolding. The whole object is placed in DMAMEM by the sketch
     // (it already had to be, for setup/mytransfers), so this payload buffer
@@ -118,6 +135,8 @@ private:
     uint8_t  iso_endpoint   = 0;
     uint32_t frame_accum    = 0;   // fractional samples-per-frame carry
 
+    const UAC1AltSetting *findAlt(int alt_number) const;
+    bool requestSampleRate(const UAC1AltSetting *alt);
     void fillFrame(uint8_t *dst, uint16_t bytes);
     void topUpFromTone();
 

@@ -57,6 +57,34 @@ public:
     uint32_t rate() const { return req_rate; }
     uint8_t  channels() const { return req_channels; }
 
+    // --- rate trim ---
+    //
+    // rate() is what gets negotiated: it selects the alternate setting and is
+    // sent in SET_CUR, so it must be a rate the device actually advertises.
+    // The rate the packets are *sized* for is a separate thing, because an
+    // asynchronous device's converter runs on its own oscillator and is not
+    // obliged to agree with ours. Two crystals a couple of hundred ppm apart
+    // is ordinary, and the difference accumulates in the device's buffer until
+    // it drops or repeats samples -- an audible click every few seconds.
+    //
+    // setRateBias() trims the sizing rate without touching the negotiated one.
+    // Positive sends marginally more samples per second. This is the knob the
+    // feedback endpoint will eventually drive; until then it can be swept by
+    // ear to find where the device actually is.
+    void setRateBias(int32_t ppm) {
+        if (ppm >  MAX_RATE_BIAS_PPM) ppm =  MAX_RATE_BIAS_PPM;
+        if (ppm < -MAX_RATE_BIAS_PPM) ppm = -MAX_RATE_BIAS_PPM;
+        rate_bias_ppm = ppm;
+    }
+    int32_t rateBiasPpm() const { return rate_bias_ppm; }
+
+    // The rate packets are actually sized for, in millihertz.
+    uint32_t effectiveRateMilliHz() const;
+
+    // 1% is far beyond any real crystal error and keeps the arithmetic well
+    // inside 32 bits; it exists to stop a typo silently destroying the stream.
+    static const int32_t MAX_RATE_BIAS_PPM = 10000;
+
     // Called once per USB frame consumed, from service(). The Audio library
     // adapter uses this to run the graph, which makes the USB frame clock the
     // master -- see the design spec section 8.
@@ -139,7 +167,8 @@ private:
     uint32_t tone_hz        = 0;
     uint32_t tone_phase     = 0;
     uint8_t  iso_endpoint   = 0;
-    uint32_t frame_accum    = 0;   // fractional samples-per-frame carry
+    uint32_t frame_accum    = 0;   // fractional samples-per-frame carry, in mHz
+    int32_t  rate_bias_ppm  = 0;
 
     const UAC1AltSetting *findAlt(int alt_number) const;
     bool requestSampleRate(const UAC1AltSetting *alt);

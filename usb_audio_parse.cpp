@@ -193,13 +193,29 @@ int uac1_find_alt(const UAC1Topology *t, uint32_t rate, uint8_t channels, uint8_
 	return -1;
 }
 
+// One frame's worth of samples, carrying the fraction forward. `units_per_frame`
+// is how many rate units make one frame: 1000 when the rate is in hertz,
+// 1000000 when it is in millihertz.
+static uint16_t frame_bytes_scaled(uint32_t *accum, uint32_t rate_units,
+                                   uint32_t units_per_frame, uint8_t channels,
+                                   uint8_t bytes_per_sample)
+{
+	if (!accum || rate_units == 0 || channels == 0 || bytes_per_sample == 0) return 0;
+
+	*accum += rate_units;
+	uint32_t samples = *accum / units_per_frame;   // whole samples this frame
+	*accum -= samples * units_per_frame;           // carry the fraction forward
+	return (uint16_t)(samples * channels * bytes_per_sample);
+}
+
 uint16_t uac1_frame_bytes(uint32_t *accum, uint32_t rate, uint8_t channels,
                           uint8_t bytes_per_sample)
 {
-	if (!accum || rate == 0 || channels == 0 || bytes_per_sample == 0) return 0;
+	return frame_bytes_scaled(accum, rate, 1000u, channels, bytes_per_sample);
+}
 
-	*accum += rate;
-	uint32_t samples = *accum / 1000u;     // whole samples this frame
-	*accum -= samples * 1000u;             // carry the fraction forward
-	return (uint16_t)(samples * channels * bytes_per_sample);
+uint16_t uac1_frame_bytes_mhz(uint32_t *accum, uint32_t rate_mhz, uint8_t channels,
+                              uint8_t bytes_per_sample)
+{
+	return frame_bytes_scaled(accum, rate_mhz, 1000000u, channels, bytes_per_sample);
 }

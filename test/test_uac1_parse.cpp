@@ -471,6 +471,56 @@ static void test_no_feedback_on_sync_devices(void)
 	}
 }
 
+// The millihertz variant must behave identically to the hertz one at whole
+// rates, and resolve trims far finer than one hertz -- at 44.1 kHz a single
+// hertz is already 22.7 ppm, which is coarser than the crystal error being
+// corrected for.
+static void test_frame_bytes_mhz(void)
+{
+	uint32_t acc = 0;
+	for (int i = 0; i < 100; i++) {
+		CHECK_EQ(uac1_frame_bytes_mhz(&acc, 48000000u, 2, 2), 192);
+	}
+	CHECK_EQ(acc, 0);
+
+	// Same 9x176 + 1x180 pattern as the hertz version.
+	acc = 0;
+	int small = 0, large = 0;
+	for (int i = 0; i < 10; i++) {
+		uint16_t b = uac1_frame_bytes_mhz(&acc, 44100000u, 2, 2);
+		if (b == 176) small++;
+		else if (b == 180) large++;
+		else CHECK_EQ(b, 0);
+	}
+	CHECK_EQ(small, 9);
+	CHECK_EQ(large, 1);
+
+	// Exactly one second of audio, no drift.
+	acc = 0;
+	uint32_t total = 0;
+	for (int i = 0; i < 1000; i++) total += uac1_frame_bytes_mhz(&acc, 44100000u, 2, 2) / 4;
+	CHECK_EQ(total, 44100);
+
+	// +200 ppm of 44100 is 8.82 Hz, which one hertz of resolution could not
+	// express. Over a second it must show up as ~9 extra samples.
+	acc = 0;
+	total = 0;
+	for (int i = 0; i < 1000; i++) total += uac1_frame_bytes_mhz(&acc, 44108820u, 2, 2) / 4;
+	CHECK_EQ(total, 44108);
+
+	// And a negative trim removes samples.
+	acc = 0;
+	total = 0;
+	for (int i = 0; i < 1000; i++) total += uac1_frame_bytes_mhz(&acc, 44091180u, 2, 2) / 4;
+	CHECK_EQ(total, 44091);
+
+	// Guards match the hertz version.
+	acc = 0;
+	CHECK_EQ(uac1_frame_bytes_mhz(&acc, 0, 2, 2), 0);
+	CHECK_EQ(uac1_frame_bytes_mhz(&acc, 44100000u, 0, 2), 0);
+	CHECK_EQ(uac1_frame_bytes_mhz(0, 44100000u, 2, 2), 0);
+}
+
 int main(void)
 {
 	load_fixture();
@@ -481,6 +531,7 @@ int main(void)
 	test_resolves_speaker_feature_unit();
 	test_finds_alt_by_format();
 	test_frame_bytes();
+	test_frame_bytes_mhz();
 	test_multirate_device();
 	test_multirate_stereo_device();
 	test_async_feedback_device();

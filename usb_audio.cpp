@@ -193,6 +193,17 @@ uint32_t USBAudioOut::available() const
 	return usb_audio_fifo_free(&fifo);
 }
 
+// req_rate scaled by the trim. Signed intermediate: a negative bias must
+// subtract, and 64-bit keeps the product exact for any rate this driver can
+// negotiate.
+uint32_t USBAudioOut::effectiveRateMilliHz() const
+{
+	int64_t v = (int64_t)req_rate * 1000
+	          + ((int64_t)req_rate * rate_bias_ppm) / 1000;
+	if (v < 1000) v = 1000;      // never let the trim stall the stream
+	return (uint32_t)v;
+}
+
 uint32_t USBAudioOut::queued() const
 {
 	return usb_audio_fifo_used(&fifo);
@@ -231,8 +242,8 @@ bool USBAudioOut::beginStreaming()
 	usb_audio_fifo_reset(&fifo);
 	topUpFromTone();
 	for (uint32_t i = 0; i < RING_SLOTS; i++) {
-		uint16_t bytes = uac1_frame_bytes(&frame_accum, req_rate,
-		                                  req_channels, req_bits / 8);
+		uint16_t bytes = uac1_frame_bytes_mhz(&frame_accum, effectiveRateMilliHz(),
+		                                      req_channels, req_bits / 8);
 		if (bytes == 0 || bytes > MAX_FRAME_BYTES) { stopStreaming(); return false; }
 		fillFrame(ring_buf[i], bytes);
 		// ioc=false: service() polls the status word, so interrupt-on-
@@ -288,8 +299,8 @@ void USBAudioOut::service()
 		// Packet size is not constant at every rate: 44.1 kHz needs 44
 		// samples nine frames out of ten and 45 on the tenth, or the
 		// stream drifts against the device's clock.
-		uint16_t bytes = uac1_frame_bytes(&frame_accum, req_rate,
-		                                  req_channels, req_bits / 8);
+		uint16_t bytes = uac1_frame_bytes_mhz(&frame_accum, effectiveRateMilliHz(),
+		                                      req_channels, req_bits / 8);
 		if (bytes == 0 || bytes > MAX_FRAME_BYTES) continue;
 		fillFrame(ring_buf[i], bytes);
 		if (sitd_fill_out(s, device->address, iso_endpoint, 0, 0,

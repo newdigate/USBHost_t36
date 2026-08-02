@@ -91,6 +91,12 @@ int uac1_find_alt(const UAC1Topology *t, uint32_t rate, uint8_t channels, uint8_
 // 48 kHz falls out as exactly 48 samples every frame with the remainder always
 // zero, so one code path serves both and the constant-size case needs no
 // special handling.
+// Same, but the rate is in millihertz so it can be trimmed finer than the
+// 22.7 ppm that one whole hertz represents at 44.1 kHz. `accum` is then in
+// millihertz units too, and the two functions must not share an accumulator.
+uint16_t uac1_frame_bytes_mhz(uint32_t *accum, uint32_t rate_mhz, uint8_t channels,
+                              uint8_t bytes_per_sample);
+
 uint16_t uac1_frame_bytes(uint32_t *accum, uint32_t rate, uint8_t channels,
                           uint8_t bytes_per_sample);
 

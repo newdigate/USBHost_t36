@@ -43,6 +43,25 @@ public:
     uint32_t packetsSent() const { return packets_sent; }
     uint32_t underruns() const { return underrun_count; }
 
+    // --- transport errors ---
+    //
+    // The controller writes completion status back into each siTD, and
+    // service() was reading it only to ask "has the hardware run this yet",
+    // discarding the error bits. A split transaction that fails still leaves
+    // the descriptor inactive, so the packet counter keeps reading a clean
+    // 1000/s while audio data is quietly not arriving. These count what was
+    // being thrown away.
+    //
+    // shortSends() is the subtle one: bytes_left non-zero means the controller
+    // did not transfer the whole payload, which no error bit reports.
+    uint32_t xactErrors() const { return err_xact; }
+    uint32_t babbleErrors() const { return err_babble; }
+    uint32_t bufferErrors() const { return err_buffer; }
+    uint32_t shortSends() const { return short_sends; }
+    uint32_t transportErrors() const {
+        return err_xact + err_babble + err_buffer + short_sends;
+    }
+
     // --- audio source ---
     //
     // Push interleaved samples (L,R,L,R...). Returns how many were accepted;
@@ -164,6 +183,10 @@ private:
     bool     is_streaming   = false;
     uint32_t packets_sent   = 0;
     uint32_t underrun_count = 0;
+    uint32_t err_xact       = 0;
+    uint32_t err_babble     = 0;
+    uint32_t err_buffer     = 0;
+    uint32_t short_sends    = 0;
     uint32_t tone_hz        = 0;
     uint32_t tone_phase     = 0;
     uint8_t  iso_endpoint   = 0;

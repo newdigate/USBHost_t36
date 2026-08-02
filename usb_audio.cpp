@@ -94,6 +94,7 @@ void USBAudioOut::disconnect()
 	active_alt = -1;
 	pending_alt = -1;
 	ctrl_state = CTRL_IDLE;
+	err_xact = err_babble = err_buffer = short_sends = 0;
 	memset(&topo, 0, sizeof(topo));
 }
 
@@ -295,6 +296,15 @@ void USBAudioOut::service()
 		sitd_status_t st;
 		sitd_get_status(s, &st);
 		if (st.active) continue;             // hardware has not run it yet
+
+		// Record what the controller reported about the packet just finished,
+		// before the descriptor is reused. A failed split transaction leaves
+		// the siTD inactive exactly like a good one, so without this the only
+		// symptom is missing audio at the far end.
+		if (st.err_transaction) err_xact++;
+		if (st.err_babble)      err_babble++;
+		if (st.err_buffer)      err_buffer++;
+		if (st.bytes_left != 0) short_sends++;
 
 		// Packet size is not constant at every rate: 44.1 kHz needs 44
 		// samples nine frames out of ten and 45 on the tenth, or the

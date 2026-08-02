@@ -21,6 +21,20 @@ because the capture chain does not know or care what the bias is. Use
 `correlate`, treat the flat floor as instrument noise, and read the answer off
 the V-shaped excess above it.
 
+ALWAYS RUN A LOOPBACK CONTROL FIRST. Feed the capture input a source the device
+under test never touched -- a tone played out of the machine and patched back
+in -- and measure it with these same settings. Measured 2026-08-02 on an RME
+Fireface UFX, which is a good interface:
+
+    control (Mac out -> RME in) : 2.23 events/s, median 10.9, max 46.0 samples
+    device  (DUT   -> RME in)   : 4.12 events/s, median 10.8, max 49.1 samples
+
+The same rate to within a factor of two, and the same magnitude distribution.
+Nearly everything being counted was the measurement chain. A whole afternoon of
+conclusions was drawn from those numbers before the control was run. Without
+one, this tool cannot tell you whether a glitch came from the device or from
+the wire you measured it with.
+
 Usage:
     glitchdetect.py selftest
     glitchdetect.py detect <recording.wav> [--tone 440] [--thresh 0.25]

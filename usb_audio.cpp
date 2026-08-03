@@ -132,7 +132,12 @@ void USBAudioOut::control(const Transfer_t *transfer)
 
 	if (ctrl_state == CTRL_SET_INTERFACE) {
 		const UAC1AltSetting *alt = findAlt(pending_alt);
-		if (uac1_alt_needs_rate_request(alt) && requestSampleRate(alt)) {
+		// The UAC1 endpoint SET_CUR must never fire for UAC2 (the rate went
+		// to the clock entity already). Today that holds incidentally --
+		// UAC2 alts carry ep_controls==0 from memset -- but an explicit
+		// guard keeps a future UAC2 bmControls parser from silently
+		// reintroducing a bogus request.
+		if (!is_uac2 && uac1_alt_needs_rate_request(alt) && requestSampleRate(alt)) {
 			ctrl_state = CTRL_SET_RATE;
 			return;      // active_alt stays invalid until the rate lands
 		}
@@ -522,8 +527,10 @@ void USBAudioOut::service()
 			// which is the correct feedbackFresh() == false signature for
 			// an intentionally open-loop transport.
 			if (fb_frames_since < 0xFFFFFF) fb_frames_since++;
-			fb_sizing_mhz = uac1_rate_slew(fb_sizing_mhz ? fb_sizing_mhz
-			                                             : effectiveRateMilliHz(),
+			// fb_sizing_mhz is seeded by beginStreamingHS() before any
+			// descriptor is armed, so it is never zero here; the slew
+			// tracks trim changes at the same bounded rate as FS.
+			fb_sizing_mhz = uac1_rate_slew(fb_sizing_mhz,
 			                               effectiveRateMilliHz(),
 			                               FB_SLEW_MHZ_PER_FRAME);
 

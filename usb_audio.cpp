@@ -409,8 +409,12 @@ bool USBAudioOut::beginStreaming()
 			if (!fb_sitd[k] ||
 			    !sitd_fill_in(fb_sitd[k], device->address, fb_endpoint, 0, 0,
 			                  fb_buf[k], sizeof(fb_buf[k]), 0, false)) {
+				// This node was never linked (alloc failed, or the fill
+				// refused), so free it directly; stopFeedback() then
+				// unlinks and frees the slots that DID arm, leaving no
+				// descriptor behind pointing at a now-disowned endpoint.
 				if (fb_sitd[k]) { sitd_free(fb_sitd[k]); fb_sitd[k] = 0; }
-				fb_endpoint = 0;
+				stopFeedback();
 				break;
 			}
 			// Slots 16 frames apart: each recurs every 32 ms, together
@@ -492,8 +496,11 @@ bool USBAudioOut::beginStreamingHS(const UAC1AltSetting *alt)
 			    !itd_fill_in(fb_itd[k], device->address, fb_endpoint,
 			                 fb_buf[k], sizeof(fb_buf[k]), fb_mps_hs,
 			                 false)) {
+				// Never linked -- free it here, then let stopFeedback()
+				// reclaim the slots that already armed (same reasoning
+				// as the FS arm above).
 				if (fb_itd[k]) { itd_free(fb_itd[k]); fb_itd[k] = 0; }
-				fb_endpoint = 0;
+				stopFeedback();
 				break;
 			}
 			// Slots 16 frames apart, like the FS reader.
@@ -506,6 +513,36 @@ bool USBAudioOut::beginStreamingHS(const UAC1AltSetting *alt)
 	underrun_count = 0;
 	is_streaming = true;
 	return true;
+}
+
+// Unlink, free and forget every feedback descriptor, whichever transport
+// armed them, and put the pipe back to "none advertised".
+//
+// Both arm loops use this when a slot fails partway through. Freeing only
+// the node that failed would leave the slots already armed LINKED while
+// fb_endpoint reads 0, and the harvest keys on the pointer: those leftovers
+// would be refilled every pass with endpoint 0 -- the device's control
+// endpoint -- for the rest of the stream's life.
+//
+// Callers must free a node that was allocated but never linked themselves,
+// before calling this: a fresh pool entry's `frame` is whatever the previous
+// user left, so unlinking one would walk an arbitrary periodic slot.
+void USBAudioOut::stopFeedback()
+{
+	for (uint32_t k = 0; k < FB_SLOTS; k++) {
+		if (fb_sitd[k]) {
+			sitd_unlink(periodic_frame_slot(fb_sitd[k]->frame), fb_sitd[k]);
+			sitd_free(fb_sitd[k]);
+			fb_sitd[k] = 0;
+		}
+		if (fb_itd[k]) {
+			itd_unlink(periodic_frame_slot(fb_itd[k]->frame), fb_itd[k]);
+			itd_free(fb_itd[k]);
+			fb_itd[k] = 0;
+		}
+	}
+	fb_endpoint = 0;
+	fb_mps_hs = 0;
 }
 
 void USBAudioOut::stopStreaming()
@@ -522,20 +559,7 @@ void USBAudioOut::stopStreaming()
 		itd_free(ring_hs[i]);
 		ring_hs[i] = 0;
 	}
-	for (uint32_t k = 0; k < FB_SLOTS; k++) {
-		if (!fb_sitd[k]) continue;
-		sitd_unlink(periodic_frame_slot(fb_sitd[k]->frame), fb_sitd[k]);
-		sitd_free(fb_sitd[k]);
-		fb_sitd[k] = 0;
-	}
-	for (uint32_t k = 0; k < FB_SLOTS; k++) {
-		if (!fb_itd[k]) continue;
-		itd_unlink(periodic_frame_slot(fb_itd[k]->frame), fb_itd[k]);
-		itd_free(fb_itd[k]);
-		fb_itd[k] = 0;
-	}
-	fb_endpoint = 0;
-	fb_mps_hs = 0;
+	stopFeedback();
 	// Nothing is linked any more, so nothing is armed for: a later
 	// beginStreaming() must build from scratch rather than match against
 	// what this stream used to be.
@@ -576,7 +600,10 @@ void USBAudioOut::service()
 		// below -- same ordering contract as the FS loop.
 		for (uint32_t k = 0; k < FB_SLOTS; k++) {
 			itd_t *f = fb_itd[k];
-			if (!f) continue;
+			// fb_endpoint is checked as well as the pointer: the two are
+			// kept in step by stopFeedback(), and if they ever were not,
+			// refilling would re-arm a read against endpoint 0.
+			if (!f || !fb_endpoint) continue;
 
 			itd_txn_status_t fst;
 			itd_get_txn_status(f, 0, &fst);
@@ -659,7 +686,8 @@ void USBAudioOut::service()
 	// that just landed steers the very next packet sizing below.
 	for (uint32_t k = 0; k < FB_SLOTS; k++) {
 		sitd_t *s = fb_sitd[k];
-		if (!s) continue;
+		// Pointer and endpoint both, as in the HS harvest above.
+		if (!s || !fb_endpoint) continue;
 
 		sitd_status_t st;
 		sitd_get_status(s, &st);

@@ -3,6 +3,7 @@
 #include "ehci_iso.h"
 #include <stdio.h>
 #include <stddef.h>
+#include <string.h>
 
 static int failures = 0, checks = 0;
 #define CHECK_EQ(a, b) do { checks++; long _ck_a = (long)(a), _ck_b = (long)(b); \
@@ -288,6 +289,65 @@ static void test_fill_out(void)
 	CHECK_EQ(sitd_fill_in(n, 128, 2, 0, 0, fill_buf, 8, 0, false), false);
 }
 
+// An siTD is refilled in place while still linked, so every hardware dword
+// the fill owns must be rewritten -- a field left stale is one the controller
+// reads from the previous packet. Filling a poisoned node must therefore
+// produce byte-identical hardware state to filling a zeroed one; any field
+// the fill forgets shows up as 0xA5A5A5A5 against 0. `next` is excluded on
+// purpose: it belongs to sitd_link/sitd_unlink, not to the fill.
+static void test_fill_refill_leaves_nothing_stale(void)
+{
+	sitd_t clean, poisoned;
+
+	memset(&clean, 0, sizeof(clean));
+	memset(&poisoned, 0xA5, sizeof(poisoned));
+	CHECK_EQ(sitd_fill_out(&clean, 3, 4, 0, 0, fill_buf, 192, 0, true), true);
+	CHECK_EQ(sitd_fill_out(&poisoned, 3, 4, 0, 0, fill_buf, 192, 0, true), true);
+	CHECK_EQ(clean.ep_char,      poisoned.ep_char);
+	CHECK_EQ(clean.uframe_mask,  poisoned.uframe_mask);
+	CHECK_EQ(clean.status,       poisoned.status);
+	CHECK_EQ(clean.buf0,         poisoned.buf0);
+	CHECK_EQ(clean.buf1,         poisoned.buf1);
+	CHECK_EQ(clean.back,         poisoned.back);
+	CHECK_EQ(poisoned.next, 0xA5A5A5A5u);   // the fill does not own the link
+
+	memset(&clean, 0, sizeof(clean));
+	memset(&poisoned, 0xA5, sizeof(poisoned));
+	CHECK_EQ(sitd_fill_in(&clean, 3, 2, 0, 0, fill_buf, 8, 0, false), true);
+	CHECK_EQ(sitd_fill_in(&poisoned, 3, 2, 0, 0, fill_buf, 8, 0, false), true);
+	CHECK_EQ(clean.ep_char,      poisoned.ep_char);
+	CHECK_EQ(clean.uframe_mask,  poisoned.uframe_mask);
+	CHECK_EQ(clean.status,       poisoned.status);
+	CHECK_EQ(clean.buf0,         poisoned.buf0);
+	CHECK_EQ(clean.buf1,         poisoned.buf1);
+	CHECK_EQ(clean.back,         poisoned.back);
+	CHECK_EQ(poisoned.next, 0xA5A5A5A5u);
+}
+
+// Untouched-on-rejection across the whole struct, matching the iTD fills'
+// contract: a fill that refuses must not have scribbled on a live descriptor.
+static void test_fill_untouched_on_rejection(void)
+{
+	sitd_t n, before;
+
+	memset(&n, 0xA5, sizeof(n));
+	memcpy(&before, &n, sizeof(n));
+
+	CHECK_EQ(sitd_fill_out(NULL, 3, 4, 0, 0, fill_buf, 192, 0, false), false);
+	CHECK_EQ(sitd_fill_out(&n, 3, 4, 0, 0, NULL, 192, 0, false), false);
+	CHECK_EQ(sitd_fill_out(&n, 3, 16, 0, 0, fill_buf, 192, 0, false), false);
+	CHECK_EQ(sitd_fill_out(&n, 128, 4, 0, 0, fill_buf, 192, 0, false), false);
+	// A budget that cannot be scheduled: too many bytes to fit the frame.
+	CHECK_EQ(sitd_fill_out(&n, 3, 4, 0, 0, fill_buf, 2000, 0, false), false);
+	CHECK_EQ(memcmp(&n, &before, sizeof(n)), 0);
+
+	CHECK_EQ(sitd_fill_in(NULL, 3, 2, 0, 0, fill_buf, 8, 0, false), false);
+	CHECK_EQ(sitd_fill_in(&n, 3, 2, 0, 0, NULL, 8, 0, false), false);
+	CHECK_EQ(sitd_fill_in(&n, 3, 16, 0, 0, fill_buf, 8, 0, false), false);
+	CHECK_EQ(sitd_fill_in(&n, 128, 2, 0, 0, fill_buf, 8, 0, false), false);
+	CHECK_EQ(memcmp(&n, &before, sizeof(n)), 0);
+}
+
 static void test_budget_in(void)
 {
 	uint8_t s = 0xAA, c = 0xAA;
@@ -399,6 +459,8 @@ int main(void)
 	test_fill_out();
 	test_budget_in();
 	test_fill_in();
+	test_fill_refill_leaves_nothing_stale();
+	test_fill_untouched_on_rejection();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

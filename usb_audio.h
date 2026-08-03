@@ -299,6 +299,7 @@ private:
     void fillFrame(uint8_t *dst, uint16_t bytes);
     void fillFrameHS(uint32_t slot);
     bool beginStreamingHS(const UAC1AltSetting *alt);
+    void stopFeedback();
     void topUpFromTone();
 
     // Descriptor capture for lastConfig(). 768 covers every UAC1/UAC2

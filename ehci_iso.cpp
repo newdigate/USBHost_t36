@@ -193,6 +193,27 @@ void itd_free(itd_t *node)
 	itd_free_list = node;
 }
 
+// Publish a descriptor's buffer state before the bit that hands it to the
+// controller.
+//
+// These descriptors are refilled IN PLACE while still linked into the
+// periodic schedule, so the controller can read one at any moment. Writing
+// the ACTIVE bit before the page pointers it depends on leaves a window --
+// short, but real -- where the hardware owns a descriptor pointing at the
+// previous packet's buffer. Statement order alone does not close it: the
+// fields are plain uint32_t, so both the compiler and the M7's store buffer
+// are free to reorder the writes. This is the barrier that makes the
+// ordering the code is written in the ordering the controller observes.
+//
+// __sync_synchronize() rather than CMSIS __DMB() because this file is also
+// compiled for the host test build; it emits `dmb ish` for Cortex-M7 (whose
+// TRM specifies all DMB options behave as full-system) and a plain fence on
+// the host, where it costs nothing and means nothing.
+static inline void iso_publish_barrier(void)
+{
+	__sync_synchronize();
+}
+
 bool itd_fill_out(itd_t *node, uint8_t dev_addr, uint8_t endpoint,
                   const void *buf, const uint16_t len[8], uint16_t max_packet,
                   bool ioc_last)
@@ -224,8 +245,9 @@ bool itd_fill_out(itd_t *node, uint8_t dev_addr, uint8_t endpoint,
 	if (last_active < 0) return false;
 	if (ioc_last) txn[last_active] |= ITD_TXN_IOC;
 
-	for (int k = 0; k < 8; k++) node->transaction[k] = txn[k];
-
+	// Buffer state first, ACTIVE last (see iso_publish_barrier): the
+	// transaction words carry the ACTIVE bits, so they are the commit.
+	//
 	// Contiguous payload means consecutive physical pages: page i is
 	// page0 + i*4K. Low bits per EHCI Table 3-6.
 	for (int i = 0; i < 7; i++) node->bufptr[i] = page0 + (uint32_t)i * 4096u;
@@ -234,6 +256,9 @@ bool itd_fill_out(itd_t *node, uint8_t dev_addr, uint8_t endpoint,
 	// only ever receives max_packet, bits 10:0.
 	node->bufptr[1] |= max_packet;
 	node->bufptr[2] |= 1u;              // Multi = 1
+
+	iso_publish_barrier();
+	for (int k = 0; k < 8; k++) node->transaction[k] = txn[k];
 	return true;
 }
 
@@ -252,20 +277,26 @@ bool itd_fill_in(itd_t *node, uint8_t dev_addr, uint8_t endpoint,
 	uint32_t page0 = base & 0xFFFFF000u;
 	uint32_t off = base & 0xFFFu;
 
-	// One transaction, microframe 0. PG is 0 by construction (off < 4K);
-	// a read crossing into the next page rolls to bufptr[1] in hardware.
-	node->transaction[0] = ITD_TXN_ACTIVE
-	                     | ((uint32_t)len << ITD_TXN_LENGTH_SHIFT)
-	                     | (off & ITD_TXN_OFFSET_MASK)
-	                     | (ioc ? ITD_TXN_IOC : 0u);
-	for (int k = 1; k < 8; k++) node->transaction[k] = 0;
-
+	// Buffer state first, ACTIVE last (see iso_publish_barrier).
+	//
 	// Contiguous payload means consecutive physical pages, same as the
 	// OUT fill. Low bits per EHCI Table 3-6.
 	for (int i = 0; i < 7; i++) node->bufptr[i] = page0 + (uint32_t)i * 4096u;
 	node->bufptr[0] |= ((uint32_t)endpoint << 8) | dev_addr;
 	node->bufptr[1] |= ITD_BUFPTR1_DIR_IN | max_packet;
 	node->bufptr[2] |= 1u;              // Multi = 1
+	// Clearing the unused microframes is part of the buffer state, not the
+	// commit: a stale ACTIVE bit left in one of them is a phantom
+	// transaction, so they must be dead before transaction[0] goes live.
+	for (int k = 1; k < 8; k++) node->transaction[k] = 0;
+
+	iso_publish_barrier();
+	// One transaction, microframe 0. PG is 0 by construction (off < 4K);
+	// a read crossing into the next page rolls to bufptr[1] in hardware.
+	node->transaction[0] = ITD_TXN_ACTIVE
+	                     | ((uint32_t)len << ITD_TXN_LENGTH_SHIFT)
+	                     | (off & ITD_TXN_OFFSET_MASK)
+	                     | (ioc ? ITD_TXN_IOC : 0u);
 	return true;
 }
 
@@ -389,10 +420,6 @@ bool sitd_fill_out(sitd_t *node, uint8_t dev_addr, uint8_t endpoint,
 	node->uframe_mask = ((uint32_t)cmask << SITD_CMASK_SHIFT)
 	                  | ((uint32_t)smask << SITD_SMASK_SHIFT);
 
-	node->status = ((uint32_t)len << SITD_TOTAL_BYTES_SHIFT)
-	             | SITD_STATUS_ACTIVE
-	             | (ioc ? (1uL << SITD_IOC_SHIFT) : 0u);
-
 	node->buf0 = addr;
 
 	// Buffer pointer 1 holds the NEXT 4K page (a payload may straddle one
@@ -406,6 +433,15 @@ bool sitd_fill_out(sitd_t *node, uint8_t dev_addr, uint8_t endpoint,
 	           | (tcount << SITD_TCOUNT_SHIFT);
 
 	node->back = LINK_TERMINATE;
+
+	// ACTIVE lives in `status`, so status is the commit and goes last (see
+	// iso_publish_barrier): an siTD is refilled in place while linked, and
+	// the controller must never see it armed against the previous packet's
+	// buffer pointers.
+	iso_publish_barrier();
+	node->status = ((uint32_t)len << SITD_TOTAL_BYTES_SHIFT)
+	             | SITD_STATUS_ACTIVE
+	             | (ioc ? (1uL << SITD_IOC_SHIFT) : 0u);
 	return true;
 }
 
@@ -431,12 +467,6 @@ bool sitd_fill_in(sitd_t *node, uint8_t dev_addr, uint8_t endpoint,
 	node->uframe_mask = ((uint32_t)cmask << SITD_CMASK_SHIFT)
 	                  | ((uint32_t)smask << SITD_SMASK_SHIFT);
 
-	// Total bytes is the room offered; the controller decrements it by what
-	// actually arrives, so received = len - bytes_left at completion.
-	node->status = ((uint32_t)len << SITD_TOTAL_BYTES_SHIFT)
-	             | SITD_STATUS_ACTIVE
-	             | (ioc ? (1uL << SITD_IOC_SHIFT) : 0u);
-
 	node->buf0 = addr;
 
 	// TP and T-count are OUT-only (EHCI 1.0 Table 3-12); for IN, buffer
@@ -444,6 +474,14 @@ bool sitd_fill_in(sitd_t *node, uint8_t dev_addr, uint8_t endpoint,
 	node->buf1 = (addr + 4096u) & 0xFFFFF000u;
 
 	node->back = LINK_TERMINATE;
+
+	// Commit last, as in sitd_fill_out. Total bytes is the room offered;
+	// the controller decrements it by what actually arrives, so
+	// received = len - bytes_left at completion.
+	iso_publish_barrier();
+	node->status = ((uint32_t)len << SITD_TOTAL_BYTES_SHIFT)
+	             | SITD_STATUS_ACTIVE
+	             | (ioc ? (1uL << SITD_IOC_SHIFT) : 0u);
 	return true;
 }
 

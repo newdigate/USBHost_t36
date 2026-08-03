@@ -137,6 +137,99 @@ static void test_fill_out(void)
 	CHECK_EQ(n->transaction[1] & ITD_TXN_OFFSET_MASK, (((uintptr_t)near_end & 0xFFFu) + 176u) & 0xFFFu);
 }
 
+// Refilling a descriptor that is still linked overwrites it in place, so the
+// fill must leave every hardware dword it owns holding fresh state -- a field
+// left stale is one the controller reads from the PREVIOUS packet. Poison the
+// node first so "still stale" is visible rather than coincidentally right,
+// and check the whole hardware area, not the fields a particular fill happens
+// to care about. This is what guards the ACTIVE-last write ordering: reorder
+// the stores and a dropped field shows up here.
+static void test_fill_out_refill_leaves_nothing_stale(void)
+{
+	itd_pool_init();
+	itd_t *n = itd_alloc();
+	CHECK_EQ(n != NULL, true);
+
+	memset(n, 0xA5, sizeof(*n));
+	uint16_t lens[8] = {176, 0, 176, 176, 0, 176, 176, 176};
+	CHECK_EQ(itd_fill_out(n, 3, 1, itd_buf, lens, 208, true), true);
+
+	uint32_t page0 = ((uint32_t)(uintptr_t)itd_buf) & 0xFFFFF000u;
+	uint32_t off = ((uint32_t)(uintptr_t)itd_buf) & 0xFFFu;
+	for (int i = 0; i < 7; i++) {
+		uint32_t want = page0 + (uint32_t)i * 4096u;
+		if (i == 0) want |= (1u << 8) | 3u;
+		if (i == 1) want |= 208u;
+		if (i == 2) want |= 1u;
+		CHECK_EQ(n->bufptr[i], want);
+	}
+	// Inactive microframes must be cleared to zero, not left poisoned:
+	// a stale ACTIVE bit here is a phantom transaction.
+	CHECK_EQ(n->transaction[1], 0u);
+	CHECK_EQ(n->transaction[4], 0u);
+	uint32_t cursor = off;
+	for (int k = 0; k < 8; k++) {
+		if (lens[k] == 0) continue;
+		uint32_t want = ITD_TXN_ACTIVE
+		              | ((uint32_t)lens[k] << ITD_TXN_LENGTH_SHIFT)
+		              | ((cursor >> 12) << ITD_TXN_PG_SHIFT)
+		              | (cursor & ITD_TXN_OFFSET_MASK);
+		if (k == 7) want |= ITD_TXN_IOC;      // last active transaction
+		CHECK_EQ(n->transaction[k], want);
+		cursor += lens[k];
+	}
+	// `next` belongs to itd_link/itd_unlink, not to the fill, so it keeps
+	// its poison -- the boundary is deliberate.
+	CHECK_EQ(n->next, 0xA5A5A5A5u);
+}
+
+static void test_fill_in_refill_leaves_nothing_stale(void)
+{
+	static uint8_t buf[8] __attribute__ ((aligned(4)));
+	itd_t n;
+	memset(&n, 0xA5, sizeof(n));
+
+	CHECK_EQ(itd_fill_in(&n, 9, 2, buf, 8, 4, false), true);
+
+	uint32_t page0 = ((uint32_t)(uintptr_t)buf) & 0xFFFFF000u;
+	uint32_t off = ((uint32_t)(uintptr_t)buf) & 0xFFFu;
+	CHECK_EQ(n.transaction[0],
+	         ITD_TXN_ACTIVE | (8u << ITD_TXN_LENGTH_SHIFT) | off);
+	for (int k = 1; k < 8; k++) CHECK_EQ(n.transaction[k], 0u);
+	CHECK_EQ(n.bufptr[0], page0 | (2u << 8) | 9u);
+	CHECK_EQ(n.bufptr[1], (page0 + 4096u) | ITD_BUFPTR1_DIR_IN | 4u);
+	CHECK_EQ(n.bufptr[2], (page0 + 8192u) | 1u);
+	for (int i = 3; i < 7; i++)
+		CHECK_EQ(n.bufptr[i], page0 + (uint32_t)i * 4096u);
+	CHECK_EQ(n.next, 0xA5A5A5A5u);
+}
+
+// The untouched-on-rejection contract, checked across the WHOLE struct the
+// way test_fill_in_rejects does. test_fill_out()'s snapshot covers the
+// transaction/bufptr arrays only, which a mutant scribbling on bookkeeping
+// would slip past.
+static void test_fill_out_untouched_on_rejection(void)
+{
+	itd_t n, before;
+	uint16_t lens[8] = {176, 176, 0, 0, 0, 0, 0, 0};
+
+	memset(&n, 0xA5, sizeof(n));
+	memcpy(&before, &n, sizeof(n));
+
+	CHECK_EQ(itd_fill_out(NULL, 3, 1, itd_buf, lens, 208, false), false);
+	CHECK_EQ(itd_fill_out(&n, 3, 1, NULL, lens, 208, false), false);
+	CHECK_EQ(itd_fill_out(&n, 3, 1, itd_buf, NULL, 208, false), false);
+	CHECK_EQ(itd_fill_out(&n, 3, 1, itd_buf, lens, 0, false), false);
+	CHECK_EQ(itd_fill_out(&n, 3, 1, itd_buf, lens, 1025, false), false);
+	CHECK_EQ(itd_fill_out(&n, 3, 16, itd_buf, lens, 208, false), false);
+	CHECK_EQ(itd_fill_out(&n, 128, 1, itd_buf, lens, 208, false), false);
+	uint16_t toolong[8] = {209, 0, 0, 0, 0, 0, 0, 0};
+	CHECK_EQ(itd_fill_out(&n, 3, 1, itd_buf, toolong, 208, false), false);
+	uint16_t allzero[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+	CHECK_EQ(itd_fill_out(&n, 3, 1, itd_buf, allzero, 208, false), false);
+	CHECK_EQ(memcmp(&n, &before, sizeof(n)), 0);
+}
+
 static void test_txn_status(void)
 {
 	itd_pool_init();
@@ -343,6 +436,9 @@ int main(void)
 	test_mixed_run_guard();
 	test_fill_in();
 	test_fill_in_rejects();
+	test_fill_out_refill_leaves_nothing_stale();
+	test_fill_in_refill_leaves_nothing_stale();
+	test_fill_out_untouched_on_rejection();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

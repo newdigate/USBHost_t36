@@ -35,15 +35,48 @@ bool USBAudioOut::claim(Device_t *dev, int type, const uint8_t *descriptors, uin
 	cfg_dump_len = cfg_dump_truncated ? (uint16_t)sizeof(cfg_dump) : (uint16_t)len;
 	memcpy(cfg_dump, descriptors, cfg_dump_len);
 
-	if (!uac1_parse_config(descriptors, len, &topo)) return false;
-	if (topo.bcd_adc != 0x0100) return false;   // UAC1 only
+	is_uac2 = false;
+	if (!uac1_parse_config(descriptors, len, &topo) || topo.bcd_adc == 0x0200) {
+		// Not parseable as UAC1 (or the header says 2.0): try the UAC2 walk.
+		if (!uac2_parse_config(descriptors, len, &topo)) return false;
+		// High speed only: FS UAC2 exists in principle but has no witness
+		// on this bench and is out of scope (design spec section 2).
+		if (dev->speed != 2) return false;   // Device_t::speed: 0=FS 1=LS 2=HS
+		is_uac2 = true;
+	} else if (topo.bcd_adc != 0x0100) {
+		return false;
+	}
 
-	int alt = uac1_find_alt(&topo, req_rate, req_channels, req_bits);
+	// P1 targets the witness's 24-bit alt explicitly: stereo from the graph
+	// is packed into the device's native frames (design spec section 1).
+	// Broader alt negotiation is P2.
+	int alt = is_uac2 ? uac2_find_alt(&topo, 8, 24)
+	                  : uac1_find_alt(&topo, req_rate, req_channels, req_bits);
 	if (alt < 0) return false;
 
 	// Do not assign `device` here -- claim_drivers() sets it after we
 	// return true.
 	active_alt = -1;         // becomes valid once configuration completes
+
+	if (is_uac2) {
+		// UAC2 control sequence: the sample rate lives on the Clock Source
+		// entity (UAC2 5.2.5.1.1), so it must be set with a CUR write before
+		// SET_INTERFACE rather than after, unlike UAC1's endpoint SET_CUR.
+		uint32_t r = req_rate;
+		rate4_buf[0] = (uint8_t)r; rate4_buf[1] = (uint8_t)(r >> 8);
+		rate4_buf[2] = (uint8_t)(r >> 16); rate4_buf[3] = (uint8_t)(r >> 24);
+		uac2_clock_cur_setup((uint8_t *)&setup, topo.control_interface,
+		                     topo.clock_source_id);
+		active_alt = -1;
+		pending_alt = alt;
+		ctrl_state = CTRL_SET_CLOCK;
+		if (!queue_Control_Transfer(dev, &setup, rate4_buf, this)) {
+			ctrl_state = CTRL_IDLE;
+			return false;
+		}
+		return true;
+	}
+
 	pending_alt = alt;
 	ctrl_state = CTRL_SET_INTERFACE;
 	if (!USBHost::setInterface(dev, setup, topo.streaming_interface, (uint8_t)alt, this)) {
@@ -84,6 +117,18 @@ void USBAudioOut::control(const Transfer_t *transfer)
 {
 	(void)transfer;
 
+	if (ctrl_state == CTRL_SET_CLOCK) {
+		// Clock CUR has landed (or at least completed); proceed to
+		// SET_INTERFACE regardless, same as the UAC1 path never checks
+		// requestSampleRate()'s transfer status beyond queuing it.
+		ctrl_state = CTRL_SET_INTERFACE;
+		if (!USBHost::setInterface(device, setup, topo.streaming_interface,
+		                           (uint8_t)pending_alt, this)) {
+			ctrl_state = CTRL_IDLE;
+		}
+		return;
+	}
+
 	if (ctrl_state == CTRL_SET_INTERFACE) {
 		const UAC1AltSetting *alt = findAlt(pending_alt);
 		if (uac1_alt_needs_rate_request(alt) && requestSampleRate(alt)) {
@@ -102,6 +147,7 @@ void USBAudioOut::disconnect()
 {
 	active_alt = -1;
 	pending_alt = -1;
+	is_uac2 = false;
 	ctrl_state = CTRL_IDLE;
 	err_xact = err_babble = err_buffer = short_sends = 0;
 	// Feedback state is deliberately NOT cleared here: like the OUT ring,
@@ -230,6 +276,9 @@ bool USBAudioOut::beginStreaming()
 {
 	if (is_streaming) return true;
 	if (active_alt < 0 || !device) return false;
+	// UAC2 streams over iTDs (Task 11); until that lands, refuse rather
+	// than arm the full-speed siTD path against a high-speed device.
+	if (is_uac2) return false;
 
 	const UAC1AltSetting *alt = findAlt(active_alt);
 	if (!alt || alt->endpoint_address == 0) return false;

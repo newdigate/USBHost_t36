@@ -4,6 +4,7 @@
 #define USB_AUDIO_H_
 #include "USBHost_t36.h"
 #include "usb_audio_parse.h"
+#include "usb_audio2_parse.h"
 #include "usb_audio_feedback.h"
 #include "ehci_iso.h"
 #include "usb_audio_fifo.h"
@@ -164,6 +165,7 @@ public:
     // the reference across a disconnect.
     const UAC1Topology &topology() const { return topo; }
     int alternateSetting() const { return active_alt; }
+    bool isUAC2() const { return is_uac2; }
 
     // Raw configuration descriptors of the last device offered to claim(),
     // captured whether or not the claim succeeded. This exists for compat
@@ -198,9 +200,11 @@ private:
     // determine the rate. active_alt only becomes valid once the last step
     // completes, so ready() stays false until the device is really at
     // req_rate.
-    enum CtrlState { CTRL_IDLE, CTRL_SET_INTERFACE, CTRL_SET_RATE };
+    enum CtrlState { CTRL_IDLE, CTRL_SET_CLOCK, CTRL_SET_INTERFACE, CTRL_SET_RATE };
     CtrlState ctrl_state = CTRL_IDLE;
     uint8_t  rate_buf[3];   // SET_CUR payload, 24-bit LE rate; needs DMA reach
+    bool     is_uac2 = false;
+    uint8_t  rate4_buf[4];   // UAC2 clock CUR payload; needs DMA reach like rate_buf
 
     setup_t  setup;   // must outlive the control transfer
     // queue_Control_Transfer() takes two Transfer_t for a setup-only request

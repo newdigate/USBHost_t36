@@ -110,11 +110,15 @@ public:
     //
     // An asynchronous device measures its own converter and reports it on a
     // paired isochronous IN endpoint: 3 bytes of 10.14 samples-per-frame
-    // every 2^bRefresh ms (UAC1 3.7.2.2). Reading it and sizing packets from
-    // it is what closes the rate loop permanently; the manual trim above
-    // covers only the crystal offset it was measured at, and this device was
-    // measured drifting -85.7 ppm on 2026-08-02 -- a number with no reason
-    // to survive temperature or unit swaps.
+    // every 2^bRefresh ms (UAC1 3.7.2.2).
+    // At high speed (UAC2) the same idea is 4 bytes of Q16.16 samples per
+    // MICROFRAME on the alt's iso IN endpoint (USB 2.0 5.12.4.2), read by
+    // an iTD at the same 16 ms slot cadence; the servo below is shared.
+    // Reading the report and sizing packets from it is what closes the rate
+    // loop permanently; the manual trim above covers only the crystal offset
+    // it was measured at, and this device was measured drifting -85.7 ppm on
+    // 2026-08-02 -- a number with no reason to survive temperature or unit
+    // swaps.
     //
     // The feedback pipe is armed whenever the active alternate setting
     // advertises one (via bSynchAddress); followFeedback() only controls
@@ -259,15 +263,20 @@ private:
     uint32_t frame_accum    = 0;   // fractional samples-per-frame carry, in mHz
     int32_t  rate_bias_ppm  = 0;
 
-    // Feedback pipe state. Two descriptors 16 frames apart give the 16 ms
-    // cadence of bRefresh=4 on a 32-slot periodic list where each slot
-    // recurs every 32 ms. 8 bytes of room per read: the FS report is 3
-    // bytes, and anything else that arrives is counted as a reject rather
-    // than a buffer error.
+    // Feedback pipe state. Two descriptors 16 frames apart give a 16 ms
+    // cadence on a 32-slot periodic list where each slot recurs every
+    // 32 ms: bRefresh=4's exact rate at FS, and a 16x subsample of the
+    // witness's 1 ms bInterval at HS -- the EMA's ~128 ms horizon needs
+    // no faster feed (UAC1 soak: +0.1 ppm at this cadence). 8 bytes of
+    // room per read: the FS report is 3 bytes, the HS report 4, and
+    // anything else that arrives is counted as a reject rather than a
+    // buffer error.
     static const uint32_t FB_SLOTS = 2;
     static const uint32_t FB_FRESH_FRAMES = 250;
     static const uint32_t FB_SLEW_MHZ_PER_FRAME = 4;   // ~90 ppm/s at 44.1k
     sitd_t  *fb_sitd[FB_SLOTS] = {};
+    itd_t   *fb_itd[FB_SLOTS] = {};   // HS reader: same slots, iTD transport
+    uint16_t fb_mps_hs = 0;           // feedback EP wMaxPacketSize (HS arm/refill)
     uint8_t  fb_buf[FB_SLOTS][8];
     uint8_t  fb_endpoint    = 0;   // 0 = none advertised
     bool     follow_fb      = true;

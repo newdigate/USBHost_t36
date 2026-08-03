@@ -413,22 +413,18 @@ bool USBAudioOut::beginStreamingHS(const UAC1AltSetting *alt)
 	alt_mps_hs = alt->max_packet_size < MAX_UFRAME_BYTES
 	           ? alt->max_packet_size : MAX_UFRAME_BYTES;
 
-	// The feedback reader is transport-independent in principle, but its
-	// siTD splits are FS machinery; the UAC2 feedback endpoint needs an
-	// iTD reader (P3). Leave feedback unarmed: open-loop at nominal is
-	// this phase's declared operating point and the gate's expected
-	// signature (the device drifts at its measured ~-86 ppm).
-	//
-	// This block must run BEFORE the arming loop: fillFrameHS() sizes its
-	// microframes from fb_sizing_mhz, and an unseeded (zero) rate makes
-	// every length zero, which itd_fill_out correctly refuses -- the
-	// first hardware gate failed exactly there.
+	// Reset the rate brain before arming. This block must run BEFORE the
+	// arming loop: fillFrameHS() sizes its microframes from fb_sizing_mhz,
+	// and an unseeded (zero) rate makes every length zero, which
+	// itd_fill_out correctly refuses -- the first hardware gate failed
+	// exactly there.
 	fb_endpoint = 0;
 	fb_rate_mhz = 0;
 	fb_avg_mhz = 0;
 	fb_frames_since = 0xFFFFFF;
 	fb_packets = fb_rejects = fb_errors = 0;
 	fb_sizing_mhz = effectiveRateMilliHz();
+	fb_mps_hs = 0;
 
 	frame_accum = 0;
 	usb_audio_fifo_reset(&fifo);
@@ -442,6 +438,35 @@ bool USBAudioOut::beginStreamingHS(const UAC1AltSetting *alt)
 			stopStreaming(); return false;
 		}
 		itd_link(periodic_frame_slot(i), ring_hs[i], (uint16_t)i);
+	}
+
+	// Arm the feedback reader if this alternate setting advertises one --
+	// same contract as the FS arm: failure to arm is not failure to
+	// stream, the loop just stays open at nominal + trim. The HS report
+	// is 4 bytes of Q16.16 samples-per-microframe on an iso IN endpoint;
+	// one iTD transaction in microframe 0 of each polled slot reads it.
+	// The witness refreshes every 1 ms (bInterval 4); the 16 ms slot
+	// cadence subsamples that, and the EMA's ~128 ms horizon needs no
+	// more. An MPS of 0 (malformed descriptor) or beyond the read buffer
+	// leaves the loop open rather than arming a read that cannot land.
+	if (alt->feedback_endpoint && alt->feedback_max_packet &&
+	    alt->feedback_max_packet <= sizeof(fb_buf[0])) {
+		fb_endpoint = alt->feedback_endpoint & 0x0F;
+		fb_mps_hs = alt->feedback_max_packet;
+		for (uint32_t k = 0; k < FB_SLOTS; k++) {
+			fb_itd[k] = itd_alloc();
+			if (!fb_itd[k] ||
+			    !itd_fill_in(fb_itd[k], device->address, fb_endpoint,
+			                 fb_buf[k], sizeof(fb_buf[k]), fb_mps_hs,
+			                 false)) {
+				if (fb_itd[k]) { itd_free(fb_itd[k]); fb_itd[k] = 0; }
+				fb_endpoint = 0;
+				break;
+			}
+			// Slots 16 frames apart, like the FS reader.
+			uint16_t frame = (uint16_t)(k * 16);
+			itd_link(periodic_frame_slot(frame), fb_itd[k], frame);
+		}
 	}
 
 	packets_sent = 0;
@@ -470,7 +495,14 @@ void USBAudioOut::stopStreaming()
 		sitd_free(fb_sitd[k]);
 		fb_sitd[k] = 0;
 	}
+	for (uint32_t k = 0; k < FB_SLOTS; k++) {
+		if (!fb_itd[k]) continue;
+		itd_unlink(periodic_frame_slot(fb_itd[k]->frame), fb_itd[k]);
+		itd_free(fb_itd[k]);
+		fb_itd[k] = 0;
+	}
 	fb_endpoint = 0;
+	fb_mps_hs = 0;
 	is_streaming = false;
 }
 
@@ -492,10 +524,46 @@ void USBAudioOut::service()
 		// Harvest whatever the controller has finished, then refill and
 		// re-link -- same shape as the FS loop below, but a whole iTD (up
 		// to eight microframe transactions) is one unit of harvest/refill
-		// instead of one siTD per packet. The FS feedback-siTD block does
-		// not apply here: feedback is deliberately left unarmed for UAC2
-		// in this phase (see beginStreamingHS), so this early return also
-		// skips it rather than spinning it uselessly over null pointers.
+		// instead of one siTD per packet.
+
+		// Collect feedback reports before re-arming audio frames, so a
+		// report that just landed steers the very next microframe sizing
+		// below -- same ordering contract as the FS loop.
+		for (uint32_t k = 0; k < FB_SLOTS; k++) {
+			itd_t *f = fb_itd[k];
+			if (!f) continue;
+
+			itd_txn_status_t fst;
+			itd_get_txn_status(f, 0, &fst);
+			if (fst.active) continue;
+
+			if (fst.err_xact || fst.err_babble || fst.err_buffer) {
+				fb_errors++;
+			} else {
+				// The HS report is exactly 4 bytes of Q16.16; the
+				// controller wrote the received count back into the
+				// length field. Anything else -- including a zero-
+				// length response from a not-yet-armed endpoint --
+				// is counted and skipped, never applied.
+				uint32_t mhz = (fst.length == 4)
+				             ? uac2_feedback_to_mhz(fb_buf[k]) : 0;
+				if (mhz && uac1_feedback_plausible(mhz,
+				                                   effectiveRateMilliHz())) {
+					fb_rate_mhz = mhz;
+					// Average before use: same dither rationale
+					// as FS (raw-chasing measured +4.8 ppm on
+					// this bench).
+					fb_avg_mhz = uac1_fb_average(fb_avg_mhz, mhz);
+					fb_frames_since = 0;
+					fb_packets++;
+				} else {
+					fb_rejects++;
+				}
+			}
+			itd_fill_in(f, device->address, fb_endpoint,
+			            fb_buf[k], sizeof(fb_buf[k]), fb_mps_hs, false);
+		}
+
 		for (uint32_t i = 0; i < RING_SLOTS; i++) {
 			itd_t *n = ring_hs[i];
 			if (!n) continue;
@@ -521,17 +589,15 @@ void USBAudioOut::service()
 				if (st.err_buffer) err_buffer++;
 			}
 
-			// No feedback target in this phase: slew toward nominal + trim
-			// only. fb_frames_since is left to free-run (it never resets
-			// below FB_FRESH_FRAMES because no feedback report ever lands),
-			// which is the correct feedbackFresh() == false signature for
-			// an intentionally open-loop transport.
+			// One frame consumed: age the feedback and take one slew
+			// step toward the device's own report when following and
+			// fresh, else the manual nominal + trim -- the same target
+			// selection as the FS loop, fed by the iTD reader above.
 			if (fb_frames_since < 0xFFFFFF) fb_frames_since++;
-			// fb_sizing_mhz is seeded by beginStreamingHS() before any
-			// descriptor is armed, so it is never zero here; the slew
-			// tracks trim changes at the same bounded rate as FS.
-			fb_sizing_mhz = uac1_rate_slew(fb_sizing_mhz,
-			                               effectiveRateMilliHz(),
+			uint32_t target = (follow_fb && fb_frames_since < FB_FRESH_FRAMES
+			                   && fb_avg_mhz)
+			                  ? fb_avg_mhz : effectiveRateMilliHz();
+			fb_sizing_mhz = uac1_rate_slew(fb_sizing_mhz, target,
 			                               FB_SLEW_MHZ_PER_FRAME);
 
 			fillFrameHS(i);

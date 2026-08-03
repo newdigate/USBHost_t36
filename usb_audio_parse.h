@@ -64,6 +64,9 @@ struct UAC1Topology {
 	uint8_t  control_interface;    // 0xFF if none
 	uint8_t  streaming_interface;  // 0xFF if none
 	uint8_t  feature_unit_id;      // 0 if none
+	// UAC2 only: the RESOLVED Clock Source entity (single-input selectors
+	// followed through); 0 for UAC1 or when unresolved.
+	uint8_t  clock_source_id;
 	uint8_t  alt_count;
 	// alts[] holds up to UAC1_MAX_ALTS entries. A device advertising more
 	// alternate settings (or more feature units, tracked internally during

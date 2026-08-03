@@ -6,6 +6,7 @@
 #include "usb_audio_parse.h"
 #include "usb_audio2_parse.h"
 #include "usb_audio_feedback.h"
+#include "usb_audio_ctrl.h"
 #include "ehci_iso.h"
 #include "usb_audio_fifo.h"
 
@@ -171,6 +172,29 @@ public:
     int alternateSetting() const { return active_alt; }
     bool isUAC2() const { return is_uac2; }
 
+    // Where the post-claim configuration sequence has got to. 0 = idle
+    // (either never started or finished); non-zero means a control transfer
+    // is outstanding. A value that never returns to 0 while alternateSetting()
+    // stays -1 is a stuck sequence -- the driver's control() callback only
+    // ever fires on CLEAN completion, because the control pipe's error
+    // callback belongs to the core's enumeration retry (enumeration.cpp), so
+    // a stalled or errored request is never reported to a driver at all.
+    uint8_t controlState() const { return (uint8_t)ctrl_state; }
+
+    // How many times the watchdog has had to abandon an outstanding request.
+    // Non-zero means the device stalled or ignored a configuration request;
+    // climbing without alternateSetting() ever going valid means it never
+    // answered at all.
+    uint32_t controlTimeouts() const { return ctrl_timeouts; }
+
+    // Retries that could not even be queued. A control transfer needs three
+    // Transfer_t entries from a shared pool of about nine (memory.cpp's four
+    // plus this driver's five), and a request that never completes holds its
+    // entries until the pipe is deleted at disconnect -- there is no cancel.
+    // So this climbing means the retry budget outran the pool, which bounds
+    // how many times it is safe to retry at all.
+    uint32_t controlQueueFails() const { return ctrl_queue_fails; }
+
     // Raw configuration descriptors of the last device offered to claim(),
     // captured whether or not the claim succeeded. This exists for compat
     // work: a sketch can hex-dump an unrecognised device's descriptors from
@@ -206,6 +230,23 @@ private:
     // req_rate.
     enum CtrlState { CTRL_IDLE, CTRL_SET_CLOCK, CTRL_SET_INTERFACE, CTRL_SET_RATE };
     CtrlState ctrl_state = CTRL_IDLE;
+
+    // Watchdog for the sequence above. A driver is only ever told about a
+    // control transfer that completes CLEANLY -- errors go to the core's
+    // enumeration retry and never reach the driver that issued the request
+    // (see usb_audio_ctrl.h), so without this a stalled request freezes the
+    // sequence until the host reboots. Measured on the bench, not deduced.
+    //
+    // 500 ms is far longer than any control transfer this driver issues and
+    // short enough that a device which re-enumerates mid-sequence is back in
+    // service inside a couple of seconds; three attempts then gives up rather
+    // than hammering a device that is simply not answering.
+    static const uint32_t CTRL_TIMEOUT_MS   = 500;
+    static const uint8_t  CTRL_MAX_ATTEMPTS = 3;
+    uint32_t ctrl_started_ms = 0;   // when the outstanding request was issued
+    uint8_t  ctrl_attempts   = 0;   // retries spent on this device
+    uint32_t ctrl_timeouts   = 0;   // lifetime count, for the heartbeat
+    uint32_t ctrl_queue_fails = 0;  // retries the Transfer_t pool refused
     uint8_t  rate_buf[3];   // SET_CUR payload, 24-bit LE rate; needs DMA reach
     bool     is_uac2 = false;
     uint8_t  rate4_buf[4];   // UAC2 clock CUR payload; needs DMA reach like rate_buf
@@ -300,6 +341,8 @@ private:
     void fillFrameHS(uint32_t slot);
     bool beginStreamingHS(const UAC1AltSetting *alt);
     void stopFeedback();
+    bool startConfigure(Device_t *dev, int alt);
+    void serviceControl();
     void topUpFromTone();
 
     // Descriptor capture for lastConfig(). 768 covers every UAC1/UAC2

@@ -21,6 +21,7 @@ H_PARSE2   = ../usb_audio2_parse.h $(H_PARSE)
 H_FEEDBACK = ../usb_audio_feedback.h
 H_ISO      = ../ehci_iso.h
 H_FIFO     = ../usb_audio_fifo.h
+H_CTRL     = ../usb_audio_ctrl.h
 
 all: run
 
@@ -45,7 +46,10 @@ test_uac2_parse: test_uac2_parse.cpp ../usb_audio2_parse.cpp $(H_PARSE2)
 test_stream_config: test_stream_config.cpp ../usb_audio_parse.cpp $(H_PARSE)
 	$(CXX) $(CXXFLAGS) -o $@ test_stream_config.cpp ../usb_audio_parse.cpp
 
-run: test_uac1_parse test_sitd test_fifo test_feedback test_itd test_pack test_uac2_parse test_stream_config
+test_ctrl: test_ctrl.cpp ../usb_audio_ctrl.cpp $(H_CTRL)
+	$(CXX) $(CXXFLAGS) -o $@ test_ctrl.cpp ../usb_audio_ctrl.cpp
+
+run: test_uac1_parse test_sitd test_fifo test_feedback test_itd test_pack test_uac2_parse test_stream_config test_ctrl
 	./test_uac1_parse
 	./test_sitd
 	./test_fifo
@@ -54,11 +58,12 @@ run: test_uac1_parse test_sitd test_fifo test_feedback test_itd test_pack test_u
 	./test_pack
 	./test_uac2_parse
 	./test_stream_config
+	./test_ctrl
 
 test_fifo: test_fifo.cpp ../usb_audio_fifo.cpp $(H_FIFO)
 	$(CXX) $(CXXFLAGS) -o $@ test_fifo.cpp ../usb_audio_fifo.cpp
 
 clean:
-	rm -rf test_fifo test_fifo.dSYM test_uac1_parse test_uac1_parse.dSYM test_sitd test_sitd.dSYM test_feedback test_feedback.dSYM test_itd test_itd.dSYM test_pack test_pack.dSYM test_uac2_parse test_uac2_parse.dSYM test_stream_config test_stream_config.dSYM
+	rm -rf test_fifo test_fifo.dSYM test_uac1_parse test_uac1_parse.dSYM test_sitd test_sitd.dSYM test_feedback test_feedback.dSYM test_itd test_itd.dSYM test_pack test_pack.dSYM test_uac2_parse test_uac2_parse.dSYM test_stream_config test_stream_config.dSYM test_ctrl test_ctrl.dSYM
 
 .PHONY: all run clean

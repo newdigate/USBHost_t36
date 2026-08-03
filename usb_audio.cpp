@@ -59,6 +59,22 @@ bool USBAudioOut::claim(Device_t *dev, int type, const uint8_t *descriptors, uin
 	// return true.
 	active_alt = -1;         // becomes valid once configuration completes
 
+	ctrl_attempts = 0;
+	return startConfigure(dev, alt);
+}
+
+// Issue the first request of the post-claim configuration sequence, and stamp
+// the watchdog. Split out of claim() because the watchdog reissues it: a
+// request that errors is never reported to this driver at all (see
+// usb_audio_ctrl.h), so retrying from the top is the only way back.
+bool USBAudioOut::startConfigure(Device_t *dev, int alt)
+{
+	if (!dev) return false;
+
+	active_alt = -1;
+	pending_alt = alt;
+	ctrl_started_ms = millis();
+
 	if (is_uac2) {
 		// UAC2 control sequence: the sample rate lives on the Clock Source
 		// entity (UAC2 5.2.5.1.1), so it must be set with a CUR write before
@@ -68,8 +84,6 @@ bool USBAudioOut::claim(Device_t *dev, int type, const uint8_t *descriptors, uin
 		rate4_buf[2] = (uint8_t)(r >> 16); rate4_buf[3] = (uint8_t)(r >> 24);
 		uac2_clock_cur_setup((uint8_t *)&setup, topo.control_interface,
 		                     topo.clock_source_id);
-		active_alt = -1;
-		pending_alt = alt;
 		ctrl_state = CTRL_SET_CLOCK;
 		if (!queue_Control_Transfer(dev, &setup, rate4_buf, this)) {
 			ctrl_state = CTRL_IDLE;
@@ -78,13 +92,33 @@ bool USBAudioOut::claim(Device_t *dev, int type, const uint8_t *descriptors, uin
 		return true;
 	}
 
-	pending_alt = alt;
 	ctrl_state = CTRL_SET_INTERFACE;
 	if (!USBHost::setInterface(dev, setup, topo.streaming_interface, (uint8_t)alt, this)) {
 		ctrl_state = CTRL_IDLE;
 		return false;
 	}
 	return true;
+}
+
+// The watchdog itself, polled from service(). Each step of the sequence gets
+// its own deadline; expiry means the completion is never coming, because the
+// only path back to a driver is a clean completion.
+void USBAudioOut::serviceControl()
+{
+	uac_ctrl_action_t action = uac_ctrl_poll(ctrl_state != CTRL_IDLE,
+	                                         ctrl_started_ms, millis(),
+	                                         CTRL_TIMEOUT_MS, ctrl_attempts,
+	                                         CTRL_MAX_ATTEMPTS);
+	if (action == UAC_CTRL_WAIT) return;
+
+	ctrl_timeouts++;
+	ctrl_state = CTRL_IDLE;
+	if (action == UAC_CTRL_GIVE_UP) return;   // alt stays -1; counter shows why
+
+	ctrl_attempts++;
+	// pending_alt is the alt this device was claimed for; the topology it
+	// came from is still the live one, so the sequence can simply restart.
+	if (!startConfigure(device, pending_alt)) ctrl_queue_fails++;
 }
 
 const UAC1AltSetting *USBAudioOut::findAlt(int alt_number) const
@@ -123,6 +157,9 @@ void USBAudioOut::control(const Transfer_t *transfer)
 		// SET_INTERFACE regardless, same as the UAC1 path never checks
 		// requestSampleRate()'s transfer status beyond queuing it.
 		ctrl_state = CTRL_SET_INTERFACE;
+		// Each step gets its own deadline: the sequence is only as alive
+		// as its outstanding request, and the next one can stall too.
+		ctrl_started_ms = millis();
 		if (!USBHost::setInterface(device, setup, topo.streaming_interface,
 		                           (uint8_t)pending_alt, this)) {
 			ctrl_state = CTRL_IDLE;
@@ -139,6 +176,7 @@ void USBAudioOut::control(const Transfer_t *transfer)
 		// reintroducing a bogus request.
 		if (!is_uac2 && uac1_alt_needs_rate_request(alt) && requestSampleRate(alt)) {
 			ctrl_state = CTRL_SET_RATE;
+			ctrl_started_ms = millis();
 			return;      // active_alt stays invalid until the rate lands
 		}
 	}
@@ -155,6 +193,9 @@ void USBAudioOut::disconnect()
 	pending_alt = -1;
 	is_uac2 = false;
 	ctrl_state = CTRL_IDLE;
+	// The retry budget belongs to the device that just left; the next one
+	// starts with a full allowance.
+	ctrl_attempts = 0;
 	err_xact = err_babble = err_buffer = short_sends = 0;
 	// Feedback state is deliberately NOT cleared here: like the OUT ring,
 	// the feedback descriptors stay linked across a detach and self-heal
@@ -577,6 +618,11 @@ void USBAudioOut::stopStreaming()
 // climbing more slowly than 1000/second.
 void USBAudioOut::service()
 {
+	// Before the streaming early-return: a configuration sequence can be
+	// outstanding on a device that has never streamed, and that is exactly
+	// the case the watchdog exists for.
+	serviceControl();
+
 	if (!is_streaming) return;
 
 	// The framework nulls `device` after disconnect() while the self-heal

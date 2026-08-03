@@ -1,0 +1,16 @@
+---
+triple:          'x86_64-apple-darwin'
+binary-path:     test_ctrl
+relocations:
+  - { offsetInCU: 0x26, offset: 0x26, size: 0x8, addend: 0x0, symName: _main, symObjAddr: 0x0, symBinAddr: 0x100002BC0, symSize: 0x80 }
+  - { offsetInCU: 0x4D, offset: 0x4D, size: 0x8, addend: 0x0, symName: __ZL8failures, symObjAddr: 0x25C4, symBinAddr: 0x100008000, symSize: 0x0 }
+  - { offsetInCU: 0x6D, offset: 0x6D, size: 0x8, addend: 0x0, symName: __ZL6checks, symObjAddr: 0x25C8, symBinAddr: 0x100008004, symSize: 0x0 }
+  - { offsetInCU: 0x88, offset: 0x88, size: 0x8, addend: 0x0, symName: _main, symObjAddr: 0x0, symBinAddr: 0x100002BC0, symSize: 0x80 }
+  - { offsetInCU: 0xA1, offset: 0xA1, size: 0x8, addend: 0x0, symName: __ZL21test_idle_never_firesv, symObjAddr: 0x80, symBinAddr: 0x100002C40, symSize: 0x1D0 }
+  - { offsetInCU: 0x139, offset: 0x139, size: 0x8, addend: 0x0, symName: __ZL22test_deadline_boundaryv, symObjAddr: 0x250, symBinAddr: 0x100002E10, symSize: 0x270 }
+  - { offsetInCU: 0x1FB, offset: 0x1FB, size: 0x8, addend: 0x0, symName: __ZL21test_attempts_exhaustv, symObjAddr: 0x4C0, symBinAddr: 0x100003080, symSize: 0x390 }
+  - { offsetInCU: 0x315, offset: 0x315, size: 0x8, addend: 0x0, symName: __ZL22test_millis_wraparoundv, symObjAddr: 0x850, symBinAddr: 0x100003410, symSize: 0x440 }
+  - { offsetInCU: 0x46A, offset: 0x46A, size: 0x8, addend: 0x0, symName: __ZL17test_zero_timeoutv, symObjAddr: 0xC90, symBinAddr: 0x100003850, symSize: 0x132 }
+  - { offsetInCU: 0x26, offset: 0x509, size: 0x8, addend: 0x0, symName: __Z13uac_ctrl_pollbjjjhh, symObjAddr: 0x0, symBinAddr: 0x100003990, symSize: 0x96 }
+  - { offsetInCU: 0x55, offset: 0x538, size: 0x8, addend: 0x0, symName: __Z13uac_ctrl_pollbjjjhh, symObjAddr: 0x0, symBinAddr: 0x100003990, symSize: 0x96 }
+...

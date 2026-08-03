@@ -6,6 +6,7 @@
 void USBAudioOut::init()
 {
 	sitd_pool_init();
+	itd_pool_init();
 	contribute_Transfers(mytransfers, sizeof(mytransfers)/sizeof(Transfer_t));
 	driver_ready_for_device(this);
 }
@@ -222,6 +223,34 @@ void USBAudioOut::fillFrame(uint8_t *dst, uint16_t bytes)
 	underrun_count++;
 }
 
+// Generate one high-speed frame: eight microframe transactions packed into
+// ring_buf_hs[slot], sized from the live FIFO with the device's native
+// channel count and subslot width. Mirrors fillFrame()'s underrun handling
+// per microframe rather than per frame, since each microframe is its own
+// transaction on the wire.
+void USBAudioOut::fillFrameHS(uint32_t slot)
+{
+	uint32_t off = 0;
+	for (int k = 0; k < 8; k++) {
+		uint16_t bytes = uac2_uframe_bytes_mhz(&frame_accum, fb_sizing_mhz,
+		                                       ch_total_out, subslot_out);
+		if (off + bytes > sizeof(ring_buf_hs[0])) bytes = 0;  // cannot happen past the begin guard; belt+braces
+		uframe_len[slot][k] = bytes;
+		if (bytes == 0) continue;
+		uint32_t frames = bytes / ((uint32_t)ch_total_out * subslot_out);
+		int16_t staged[8 * 2];        // up to 8 frames of live stereo per uframe at 48k+slack
+		if (frames * 2 <= sizeof(staged) / sizeof(staged[0])
+		    && usb_audio_fifo_read(&fifo, staged, frames * 2)) {
+			uac_pack16(ring_buf_hs[slot] + off, staged, frames, 2,
+			           ch_total_out, subslot_out);
+		} else {
+			for (uint32_t b = 0; b < bytes; b++) ring_buf_hs[slot][off + b] = 0;
+			underrun_count++;
+		}
+		off += bytes;
+	}
+}
+
 // Test-tone producer. Feeds the same FIFO an external writer would, so what
 // gets exercised is the real streaming path rather than a parallel one.
 void USBAudioOut::topUpFromTone()
@@ -276,12 +305,17 @@ bool USBAudioOut::beginStreaming()
 {
 	if (is_streaming) return true;
 	if (active_alt < 0 || !device) return false;
-	// UAC2 streams over iTDs (Task 11); until that lands, refuse rather
-	// than arm the full-speed siTD path against a high-speed device.
-	if (is_uac2) return false;
 
 	const UAC1AltSetting *alt = findAlt(active_alt);
 	if (!alt || alt->endpoint_address == 0) return false;
+
+	// UAC2 streams over iTDs, a different transport with its own sizing
+	// state (channels/subslot/max-packet). Dispatch here, with `alt`
+	// resolved but before any of the FS-only setup below -- the single-
+	// packet test siTD release in particular is FS bookkeeping that must
+	// not run against a device that never had one armed.
+	if (is_uac2) return beginStreamingHS(alt);
+
 	iso_endpoint = alt->endpoint_address & 0x0F;
 
 	// Release the single-packet test descriptor first. It holds one of the
@@ -355,6 +389,57 @@ bool USBAudioOut::beginStreaming()
 	return true;
 }
 
+// High-speed/UAC2 counterpart of beginStreaming(): one iTD per periodic slot
+// instead of an siTD, eight microframe transactions per iTD instead of one
+// packet per frame. Called with `alt` already resolved and validated by the
+// caller (beginStreaming()).
+bool USBAudioOut::beginStreamingHS(const UAC1AltSetting *alt)
+{
+	iso_endpoint = alt->endpoint_address & 0x0F;
+	ch_total_out = alt->channels;
+	subslot_out  = alt->subframe_size;
+
+	// Guard on the NEGOTIATED rate's per-microframe need, not the
+	// advertised ceiling: the witness advertises wMaxPacketSize 800
+	// (sized for 192 kHz) and at 44.1 kHz uses at most 192 B of it.
+	uint32_t worst = (req_rate / 8000u + 1u) * (uint32_t)ch_total_out * subslot_out;
+	if (worst > MAX_UFRAME_BYTES) return false;
+	if (ch_total_out < 2 || subslot_out < 2 || subslot_out > 4) return false;
+	alt_mps_hs = alt->max_packet_size < MAX_UFRAME_BYTES
+	           ? alt->max_packet_size : MAX_UFRAME_BYTES;
+
+	frame_accum = 0;
+	usb_audio_fifo_reset(&fifo);
+	topUpFromTone();
+	for (uint32_t i = 0; i < RING_SLOTS; i++) {
+		ring_hs[i] = itd_alloc();
+		if (!ring_hs[i]) { stopStreaming(); return false; }
+		fillFrameHS(i);
+		if (!itd_fill_out(ring_hs[i], device->address, iso_endpoint,
+		                  ring_buf_hs[i], uframe_len[i], alt_mps_hs, false)) {
+			stopStreaming(); return false;
+		}
+		itd_link(periodic_frame_slot(i), ring_hs[i], (uint16_t)i);
+	}
+
+	// The feedback reader is transport-independent in principle, but its
+	// siTD splits are FS machinery; the UAC2 feedback endpoint needs an
+	// iTD reader (P3). Leave feedback unarmed: open-loop at nominal is
+	// this phase's declared operating point and the gate's expected
+	// signature (the device drifts at its measured ~-86 ppm).
+	fb_endpoint = 0;
+	fb_rate_mhz = 0;
+	fb_avg_mhz = 0;
+	fb_frames_since = 0xFFFFFF;
+	fb_packets = fb_rejects = fb_errors = 0;
+	fb_sizing_mhz = effectiveRateMilliHz();
+
+	packets_sent = 0;
+	underrun_count = 0;
+	is_streaming = true;
+	return true;
+}
+
 void USBAudioOut::stopStreaming()
 {
 	for (uint32_t i = 0; i < RING_SLOTS; i++) {
@@ -362,6 +447,12 @@ void USBAudioOut::stopStreaming()
 		sitd_unlink(periodic_frame_slot(i), ring[i]);
 		sitd_free(ring[i]);
 		ring[i] = 0;
+	}
+	for (uint32_t i = 0; i < RING_SLOTS; i++) {
+		if (!ring_hs[i]) continue;
+		itd_unlink(periodic_frame_slot(i), ring_hs[i]);
+		itd_free(ring_hs[i]);
+		ring_hs[i] = 0;
 	}
 	for (uint32_t k = 0; k < FB_SLOTS; k++) {
 		if (!fb_sitd[k]) continue;
@@ -386,6 +477,60 @@ void USBAudioOut::service()
 	if (!is_streaming) return;
 
 	topUpFromTone();
+
+	if (is_uac2) {
+		// Harvest whatever the controller has finished, then refill and
+		// re-link -- same shape as the FS loop below, but a whole iTD (up
+		// to eight microframe transactions) is one unit of harvest/refill
+		// instead of one siTD per packet. The FS feedback-siTD block does
+		// not apply here: feedback is deliberately left unarmed for UAC2
+		// in this phase (see beginStreamingHS), so this early return also
+		// skips it rather than spinning it uselessly over null pointers.
+		for (uint32_t i = 0; i < RING_SLOTS; i++) {
+			itd_t *n = ring_hs[i];
+			if (!n) continue;
+
+			bool done = true;
+			for (unsigned k = 0; k < 8 && done; k++) {
+				if (!uframe_len[i][k]) continue;
+				itd_txn_status_t st;
+				itd_get_txn_status(n, k, &st);
+				if (st.active) done = false;
+			}
+			if (!done) continue;         // hardware has not run it yet
+
+			// Record what the controller reported about the microframes
+			// just finished, before the descriptor is reused -- same
+			// rationale as the FS ring's error bookkeeping below.
+			for (unsigned k = 0; k < 8; k++) {
+				if (!uframe_len[i][k]) continue;
+				itd_txn_status_t st;
+				itd_get_txn_status(n, k, &st);
+				if (st.err_xact)   err_xact++;
+				if (st.err_babble) err_babble++;
+				if (st.err_buffer) err_buffer++;
+			}
+
+			// No feedback target in this phase: slew toward nominal + trim
+			// only. fb_frames_since is left to free-run (it never resets
+			// below FB_FRESH_FRAMES because no feedback report ever lands),
+			// which is the correct feedbackFresh() == false signature for
+			// an intentionally open-loop transport.
+			if (fb_frames_since < 0xFFFFFF) fb_frames_since++;
+			fb_sizing_mhz = uac1_rate_slew(fb_sizing_mhz ? fb_sizing_mhz
+			                                             : effectiveRateMilliHz(),
+			                               effectiveRateMilliHz(),
+			                               FB_SLEW_MHZ_PER_FRAME);
+
+			fillFrameHS(i);
+			if (itd_fill_out(n, device->address, iso_endpoint, ring_buf_hs[i],
+			                 uframe_len[i], alt_mps_hs, false)) {
+				packets_sent++;
+				if (frame_cb) frame_cb();
+			}
+		}
+		return;
+	}
 
 	// Collect feedback reports before re-arming audio frames, so a report
 	// that just landed steers the very next packet sizing below.

@@ -232,6 +232,20 @@ private:
     static const uint16_t MAX_FRAME_BYTES = 256;
     sitd_t  *ring[RING_SLOTS] = {};
     uint8_t  ring_buf[RING_SLOTS][MAX_FRAME_BYTES];
+
+    // HS/UAC2 ring: one iTD per periodic slot, eight microframe transactions
+    // each -- the same 32 ms revolution as the siTD ring. Buffers hold eight
+    // microframes at the ceiling; 224 covers 48 kHz x 8ch x 4B subslots
+    // ((48000/8000 + 1) * 32). The negotiated rate's need is guarded at
+    // beginStreaming; alts/rates needing more are refused there.
+    static const uint16_t MAX_UFRAME_BYTES = 224;
+    itd_t   *ring_hs[RING_SLOTS] = {};
+    uint8_t  ring_buf_hs[RING_SLOTS][8 * MAX_UFRAME_BYTES];
+    uint16_t uframe_len[RING_SLOTS][8];
+    uint8_t  ch_total_out = 0;    // device channels on the active alt
+    uint8_t  subslot_out  = 0;    // bytes per device sample
+    uint16_t alt_mps_hs   = 0;    // min(advertised MPS, MAX_UFRAME_BYTES)
+
     bool     is_streaming   = false;
     uint32_t packets_sent   = 0;
     uint32_t underrun_count = 0;
@@ -268,6 +282,8 @@ private:
     const UAC1AltSetting *findAlt(int alt_number) const;
     bool requestSampleRate(const UAC1AltSetting *alt);
     void fillFrame(uint8_t *dst, uint16_t bytes);
+    void fillFrameHS(uint32_t slot);
+    bool beginStreamingHS(const UAC1AltSetting *alt);
     void topUpFromTone();
 
     // Descriptor capture for lastConfig(). 768 covers every UAC1/UAC2

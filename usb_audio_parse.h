@@ -47,6 +47,11 @@ struct UAC1AltSetting {
 	// own bmAttributes usage bits read as "data", so they cannot identify it.
 	uint8_t  feedback_endpoint;
 	uint8_t  feedback_refresh;   // poll period exponent: 2^n ms
+	// wMaxPacketSize of the feedback endpoint -- the HS iTD reader must
+	// program the endpoint's MPS into bufptr[1]. Captured by the UAC2
+	// parser; 0 when no feedback endpoint exists or on the UAC1/FS path,
+	// whose siTD reader has no MPS field to program.
+	uint16_t feedback_max_packet;
 };
 
 // True if this alternate setting can carry `rate`, by either idiom. Selecting

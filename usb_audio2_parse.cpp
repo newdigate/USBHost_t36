@@ -157,7 +157,13 @@ bool uac2_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out)
 				alt->endpoint_address = b[2];
 				alt->max_packet_size  = (uint16_t)b[4] | ((uint16_t)b[5] << 8);
 			} else if (!is_out && is_iso) {
-				if (alt->feedback_endpoint == 0) alt->feedback_endpoint = b[2];
+				// First IN iso endpoint on the interface wins, and its
+				// wMaxPacketSize rides along for the iTD reader.
+				if (alt->feedback_endpoint == 0) {
+					alt->feedback_endpoint = b[2];
+					alt->feedback_max_packet =
+					    (uint16_t)b[4] | ((uint16_t)b[5] << 8);
+				}
 			}
 		}
 		i += l;

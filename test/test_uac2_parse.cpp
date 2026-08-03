@@ -145,6 +145,7 @@ static void test_collects_alt_settings(void)
 	CHECK_EQ(t.alts[1].endpoint_address, 0x01);
 	CHECK_EQ(t.alts[1].max_packet_size, 800);
 	CHECK_EQ(t.alts[1].feedback_endpoint, 0x82);
+	CHECK_EQ(t.alts[1].feedback_max_packet, 4);
 	CHECK_EQ(t.alts[1].feedback_endpoint & 0x80, 0x80);   // IN bit set
 	// UAC2 rates are runtime RANGE negotiation with the clock, not
 	// descriptor data -- the descriptor walk must never invent a count.
@@ -160,6 +161,7 @@ static void test_collects_alt_settings(void)
 	CHECK_EQ(t.alts[2].endpoint_address, 0x01);
 	CHECK_EQ(t.alts[2].max_packet_size, 400);
 	CHECK_EQ(t.alts[2].feedback_endpoint, 0x82);
+	CHECK_EQ(t.alts[2].feedback_max_packet, 4);
 	CHECK_EQ(t.alts[2].rate_count, 0);
 }
 

@@ -25,6 +25,13 @@ static uint32_t decode3(uint32_t v)
 	return uac1_feedback_to_mhz(fb);
 }
 
+static uint32_t decode4(uint32_t v)
+{
+	uint8_t fb[4] = { (uint8_t)(v & 0xFF), (uint8_t)((v >> 8) & 0xFF),
+	                  (uint8_t)((v >> 16) & 0xFF), (uint8_t)((v >> 24) & 0xFF) };
+	return uac2_feedback_to_mhz(fb);
+}
+
 static void test_decode(void)
 {
 	// 44.1 kHz exactly is 44.1 * 16384 = 722534.4; a device rounds to
@@ -122,12 +129,48 @@ static void test_average(void)
 	CHECK_EQ(uac1_fb_average(44095703, 44095703), 44095703);
 }
 
+static void test_decode_hs(void)
+{
+	// 44.1 kHz is 5.5125 samples/microframe = 361267.2 in 16.16; a device
+	// rounds to 361267, which decodes to the same truncated millihertz as
+	// the UAC1 vector 722534 (= 2 * 361267): both measure 44.1 kHz.
+	CHECK_EQ(decode4(361267), 44099975);
+
+	// 48 kHz exactly: 6.0 * 65536 = 393216 -> precisely 48000000 mHz.
+	CHECK_EQ(decode4(393216), 48000000);
+
+	// One 16.16 LSB above 44.1k: resolution is 8e6/65536 = 122 mHz.
+	CHECK_EQ(decode4(361268), 44100097);
+
+	// The witness's crystal, measured three independent ways at -83..-86
+	// ppm: a device 86 ppm slow of 44.1k reports about 361236.1 ->
+	// 361236 -> 44096191 mHz = -86.4 ppm. The hardware gate's Step A
+	// expects the live EMA within a few ppm of this value.
+	CHECK_EQ(decode4(361236), 44096191);
+
+	// Null input and the all-zero payload devices send before their
+	// measurement engine runs: decode to 0, which validity rejects.
+	CHECK_EQ(uac2_feedback_to_mhz(0), 0);
+	CHECK_EQ(decode4(0), 0);
+
+	// Saturation: unlike 10.14-in-3, a 32-bit 16.16 report can encode
+	// rates whose millihertz exceed uint32. Exact boundary: 35184372
+	// still fits (4294967285); one LSB more overflows and must clamp to
+	// UINT32_MAX -- deep in the plausibility gate's rejection band --
+	// not wrap around into a plausible value.
+	CHECK_EQ(decode4(35184372), 4294967285u);
+	CHECK_EQ(decode4(35184373), 4294967295u);
+	CHECK_EQ(decode4(0xFFFFFFFFu), 4294967295u);
+	CHECK_EQ(uac1_feedback_plausible(4294967295u, 44100000), false);
+}
+
 int main(void)
 {
 	test_decode();
 	test_validity();
 	test_slew();
 	test_average();
+	test_decode_hs();
 	if (failures == 0) {
 		printf("test_feedback: all %d checks passed\n", checks);
 		return 0;

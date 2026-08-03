@@ -14,6 +14,18 @@ uint32_t uac1_feedback_to_mhz(const uint8_t fb[3])
 	return (uint32_t)(((uint64_t)q14 * 1000000u) >> 14);
 }
 
+uint32_t uac2_feedback_to_mhz(const uint8_t fb[4])
+{
+	if (!fb) return 0;
+	uint32_t v = (uint32_t)fb[0] | ((uint32_t)fb[1] << 8)
+	           | ((uint32_t)fb[2] << 16) | ((uint32_t)fb[3] << 24);
+	// samples/microframe * 8000 microframes/s * 1000 mHz/Hz, then drop
+	// the 16 fractional bits. 64-bit: 0xFFFFFFFF * 8e6 needs 52 bits.
+	uint64_t mhz = ((uint64_t)v * 8000000u) >> 16;
+	if (mhz > 0xFFFFFFFFu) return 0xFFFFFFFFu;
+	return (uint32_t)mhz;
+}
+
 bool uac1_feedback_plausible(uint32_t fb_mhz, uint32_t nominal_mhz)
 {
 	if (fb_mhz == 0 || nominal_mhz == 0) return false;

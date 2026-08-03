@@ -17,6 +17,18 @@
 // gate on uac1_feedback_plausible() before applying.
 uint32_t uac1_feedback_to_mhz(const uint8_t fb[3]);
 
+// Decode a high-speed UAC2 feedback payload: 4 bytes little-endian holding
+// the device's measured rate in samples per MICROFRAME as Q16.16 fixed
+// point (USB 2.0 section 5.12.4.2 at high speed). Returns millihertz,
+// truncated; resolution one 16.16 LSB (122 mHz at the 8 kHz microframe
+// rate). Returns 0 for a null pointer or all-zero payload, and saturates to
+// UINT32_MAX when the encoded rate exceeds the millihertz range -- unlike
+// the 3-byte 10.14 format, a 32-bit report can overflow uint32 millihertz,
+// and garbage must saturate into the plausibility gate's rejection band
+// rather than wrap into it. Callers gate on uac1_feedback_plausible()
+// before applying.
+uint32_t uac2_feedback_to_mhz(const uint8_t fb[4]);
+
 // True when a decoded rate is within +-2% of the negotiated rate. Real
 // crystals err by hundreds of ppm at most; anything outside this window is a
 // malformed packet (wrong fixed-point format, zero fill, truncated read),

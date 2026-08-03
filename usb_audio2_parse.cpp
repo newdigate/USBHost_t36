@@ -121,6 +121,8 @@ bool uac2_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out)
 				if (clock_source_count < UAC2_MAX_CLOCKS)
 					clock_source_ids[clock_source_count++] = b[3];
 			} else if (in_control && subtype == AC_CLOCK_SELECTOR && l >= 6) {
+				// l >= 6 is enough for the fields read (id, pin count, first
+				// source) -- not the descriptor's canonical 8-byte length.
 				// Only a single-input selector resolves unambiguously to one
 				// upstream clock; a multi-input selector's actual source
 				// depends on a runtime CUR selection this parser does not
@@ -138,6 +140,9 @@ bool uac2_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out)
 					terminal_count++;
 				}
 			} else if (in_stream && alt && subtype == AS_GENERAL && l >= 11) {
+				// A streaming interface's alts must all name the same
+				// terminal per the class spec; the last one seen wins here
+				// rather than cross-checking agreement.
 				terminal_link = b[3];
 				have_terminal_link = true;
 				alt->channels = b[10];

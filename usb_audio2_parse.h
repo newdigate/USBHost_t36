@@ -26,9 +26,11 @@ void uac2_clock_cur_setup(uint8_t setup[8], uint8_t ac_interface, uint8_t clock_
 // rate_count is 0 and rate_min/max are 0: UAC2 rates are a runtime RANGE
 // conversation with the clock, not descriptor data. Returns false when no
 // AS interface with an iso OUT endpoint exists, the header is not bcdADC
-// 0x0200, the clock chain does not resolve to a single CLOCK_SOURCE
+// 0x0200, or the clock chain does not resolve to a single CLOCK_SOURCE
 // (multi-input selectors and multipliers are out of scope and must fail
-// closed), or any descriptor would run past `len`.
+// closed). Descriptors are never read past `len`; a truncated buffer fails
+// only by starving those criteria, so a cut AFTER the needed descriptors
+// still parses (the truncation tests pin the exact boundary).
 bool uac2_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out);
 
 // The alt setting matching a channel count and bit resolution, or -1. Rate

@@ -36,8 +36,8 @@ static void test_clock_cur_setup(void)
 // fixture starts at the IAD, with the 9-byte CONFIGURATION header already
 // stripped off, same as claim() receives it). Ground truth below was derived
 // by hand-decoding fixtures/xmos_uac2_2ami8o8.bin with xxd and cross-checked
-// with an independent descriptor-walk script; see the task report for the
-// full table. Landmarks:
+// with an independent descriptor-walk script. The landmark list below is the
+// authoritative record. Landmarks:
 //   IAD (first_if=0, count=3, UAC2 protocol 0x20)
 //   AC interface 0, alt 0, protocol 0x20
 //   CS AC HEADER: bcdADC 0x0200, wTotalLength 167 (offset 17, ends exactly
@@ -208,9 +208,9 @@ static void test_parses_with_config_header_prefix(void)
 }
 
 // Truncating the real fixture at every possible length must never crash or
-// read out of bounds -- verified for real by running this under ASan/UBSan
-// (see task report), which is what the survived-count assertion stands in
-// for here. Measured (not guessed) with an instrumented sweep of this exact
+// read out of bounds -- verified for real by running this suite under
+// ASan/UBSan during review, which is what the survived-count assertion
+// stands in for here. Measured (not guessed) with a sweep of this exact
 // fixture: every length in [0, 230] returns false and every length in
 // [231, 372] returns true, with no other flips in between. 231 is exactly
 // where the byte-224 ENDPOINT descriptor (the alt 1 iso OUT data endpoint)

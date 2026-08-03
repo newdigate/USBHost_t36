@@ -116,6 +116,39 @@ uint16_t uac1_frame_bytes(uint32_t *accum, uint32_t rate, uint8_t channels,
 uint16_t uac2_uframe_bytes_mhz(uint32_t *accum, uint32_t rate_mhz, uint8_t channels,
                                uint8_t bytes_per_sample);
 
+// The device-side layout an armed stream is built around. Comparing two of
+// these answers the only question that matters when a device is claimed while
+// a stream is already running: can the descriptors already linked into the
+// periodic schedule keep serving what is attached now?
+//
+// The device ADDRESS is deliberately absent. Every re-arm reads it from the
+// live device, which is what lets an unplug/replug of the same device resume
+// without tearing the ring down (the self-heal contract in USBAudioOut::
+// disconnect()). What must force a rebuild is descriptor layout the ring
+// cannot change under itself: the transport (siTD ring vs iTD ring), and the
+// endpoint, geometry and packet ceiling every descriptor was filled with.
+struct UACStreamConfig {
+	uint8_t  is_uac2;            // transport: 0 = FS/siTD ring, 1 = HS/iTD ring
+	uint8_t  alternate_setting;
+	uint8_t  endpoint_address;
+	uint8_t  channels;
+	uint8_t  subframe_size;
+	uint16_t max_packet_size;
+	uint8_t  feedback_endpoint;
+};
+
+// Fill `out` from a resolved alternate setting. A null `alt` -- the
+// unconfigured device, which is what findAlt() returns while detached --
+// yields an all-zero config rather than leaving the caller's storage
+// untouched, so a stale stack value can never be compared against an armed
+// stream. A null `out` is a no-op.
+void uac_stream_config(UACStreamConfig *out, bool is_uac2, const UAC1AltSetting *alt);
+
+// True when a stream armed for `a` can keep running for `b`. Null pointers
+// compare false: a stream is never torn down on the strength of a bad
+// pointer, and never kept on one either.
+bool uac_stream_config_equal(const UACStreamConfig *a, const UACStreamConfig *b);
+
 // Pack 16-bit interleaved frames into a device subslot layout, with the
 // sample LEFT-JUSTIFIED within the subslot as USB Audio Data Formats 2.0
 // section 2.3.1 requires: 16-in-2 verbatim little-endian; 24-in-3 emits

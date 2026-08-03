@@ -245,3 +245,34 @@ uint32_t uac_pack16(uint8_t *dst, const int16_t *src, uint32_t frames,
 	}
 	return (uint32_t)(p - dst);
 }
+
+void uac_stream_config(UACStreamConfig *out, bool is_uac2, const UAC1AltSetting *alt)
+{
+	if (!out) return;
+	memset(out, 0, sizeof(*out));
+	if (!alt) return;
+	out->is_uac2           = is_uac2 ? 1 : 0;
+	out->alternate_setting = alt->alternate_setting;
+	out->endpoint_address  = alt->endpoint_address;
+	out->channels          = alt->channels;
+	out->subframe_size     = alt->subframe_size;
+	out->max_packet_size   = alt->max_packet_size;
+	out->feedback_endpoint = alt->feedback_endpoint;
+}
+
+bool uac_stream_config_equal(const UACStreamConfig *a, const UACStreamConfig *b)
+{
+	if (!a || !b) return false;
+	// Field by field rather than memcmp: the padding a compiler inserts
+	// around these members is not part of the comparison, and memcmp would
+	// only be safe for as long as every config in existence came from
+	// uac_stream_config()'s memset. Listing the fields also makes it
+	// visible which ones force a rebuild.
+	return a->is_uac2           == b->is_uac2
+	    && a->alternate_setting == b->alternate_setting
+	    && a->endpoint_address  == b->endpoint_address
+	    && a->channels          == b->channels
+	    && a->subframe_size     == b->subframe_size
+	    && a->max_packet_size   == b->max_packet_size
+	    && a->feedback_endpoint == b->feedback_endpoint;
+}

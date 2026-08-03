@@ -42,7 +42,10 @@ test_pack: test_pack.cpp ../usb_audio_parse.cpp $(H_PARSE)
 test_uac2_parse: test_uac2_parse.cpp ../usb_audio2_parse.cpp $(H_PARSE2)
 	$(CXX) $(CXXFLAGS) -o $@ test_uac2_parse.cpp ../usb_audio2_parse.cpp
 
-run: test_uac1_parse test_sitd test_fifo test_feedback test_itd test_pack test_uac2_parse
+test_stream_config: test_stream_config.cpp ../usb_audio_parse.cpp $(H_PARSE)
+	$(CXX) $(CXXFLAGS) -o $@ test_stream_config.cpp ../usb_audio_parse.cpp
+
+run: test_uac1_parse test_sitd test_fifo test_feedback test_itd test_pack test_uac2_parse test_stream_config
 	./test_uac1_parse
 	./test_sitd
 	./test_fifo
@@ -50,11 +53,12 @@ run: test_uac1_parse test_sitd test_fifo test_feedback test_itd test_pack test_u
 	./test_itd
 	./test_pack
 	./test_uac2_parse
+	./test_stream_config
 
 test_fifo: test_fifo.cpp ../usb_audio_fifo.cpp $(H_FIFO)
 	$(CXX) $(CXXFLAGS) -o $@ test_fifo.cpp ../usb_audio_fifo.cpp
 
 clean:
-	rm -rf test_fifo test_fifo.dSYM test_uac1_parse test_uac1_parse.dSYM test_sitd test_sitd.dSYM test_feedback test_feedback.dSYM test_itd test_itd.dSYM test_pack test_pack.dSYM test_uac2_parse test_uac2_parse.dSYM
+	rm -rf test_fifo test_fifo.dSYM test_uac1_parse test_uac1_parse.dSYM test_sitd test_sitd.dSYM test_feedback test_feedback.dSYM test_itd test_itd.dSYM test_pack test_pack.dSYM test_uac2_parse test_uac2_parse.dSYM test_stream_config test_stream_config.dSYM
 
 .PHONY: all run clean

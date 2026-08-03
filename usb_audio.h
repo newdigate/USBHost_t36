@@ -250,6 +250,12 @@ private:
     uint8_t  subslot_out  = 0;    // bytes per device sample
     uint16_t alt_mps_hs   = 0;    // min(advertised MPS, MAX_UFRAME_BYTES)
 
+    // What the currently linked descriptors were built for. Compared against
+    // the live device on every beginStreaming() so a re-claim that needs a
+    // different transport, alt or geometry rebuilds instead of silently
+    // running the previous device's ring; all-zero while nothing is armed.
+    UACStreamConfig armed = {};
+
     bool     is_streaming   = false;
     uint32_t packets_sent   = 0;
     uint32_t underrun_count = 0;

@@ -166,9 +166,11 @@ void USBAudioOut::disconnect()
 	// stopped; a pre-detach feedback average may count as fresh for up to
 	// FB_FRESH_FRAMES more frames, which is benign -- it is the same
 	// device's crystal, and the slew re-converges within a second.
-	// Re-attaching a DIFFERENT class or alt does not re-arm the stream at
-	// all (is_streaming gates beginStreaming); that is a known gap,
-	// tracked separately, predating the feedback work.
+	// Re-attaching a device that needs a different transport, alt or
+	// geometry does not resume this stream: the next beginStreaming()
+	// compares the live device against what the descriptors were armed for
+	// and rebuilds instead (which is why a sketch must call it again after
+	// a re-attach, as the graph example does).
 	memset(&topo, 0, sizeof(topo));
 }
 
@@ -314,7 +316,27 @@ uint32_t USBAudioOut::queued() const
 
 bool USBAudioOut::beginStreaming()
 {
-	if (is_streaming) return true;
+	if (is_streaming) {
+		// No configured device to compare against -- detached, or a
+		// re-claim still working through its control sequence. Coast: the
+		// self-heal contract keeps the armed descriptors linked, and
+		// service() is paused until the device comes back (disconnect()).
+		if (active_alt < 0 || !device) return true;
+
+		// A device is configured, so ask whether the linked descriptors
+		// actually fit it. Replugging the SAME device re-parses to the
+		// same layout and keeps streaming, which is the whole point of
+		// self-heal. Claiming a device that needs the other transport, a
+		// different alt, or a different geometry does not: every armed
+		// descriptor belongs to the previous device, service() would
+		// dispatch on the new is_uac2 and walk the other transport's null
+		// arrays forever, and this function used to report success while
+		// it happened.
+		UACStreamConfig want;
+		uac_stream_config(&want, is_uac2, findAlt(active_alt));
+		if (uac_stream_config_equal(&armed, &want)) return true;
+		stopStreaming();
+	}
 	if (active_alt < 0 || !device) return false;
 
 	const UAC1AltSetting *alt = findAlt(active_alt);
@@ -325,7 +347,11 @@ bool USBAudioOut::beginStreaming()
 	// resolved but before any of the FS-only setup below -- the single-
 	// packet test siTD release in particular is FS bookkeeping that must
 	// not run against a device that never had one armed.
-	if (is_uac2) return beginStreamingHS(alt);
+	if (is_uac2) {
+		if (!beginStreamingHS(alt)) return false;
+		uac_stream_config(&armed, true, alt);
+		return true;
+	}
 
 	iso_endpoint = alt->endpoint_address & 0x0F;
 
@@ -396,6 +422,7 @@ bool USBAudioOut::beginStreaming()
 
 	packets_sent = 0;
 	underrun_count = 0;
+	uac_stream_config(&armed, false, alt);
 	is_streaming = true;
 	return true;
 }
@@ -509,6 +536,10 @@ void USBAudioOut::stopStreaming()
 	}
 	fb_endpoint = 0;
 	fb_mps_hs = 0;
+	// Nothing is linked any more, so nothing is armed for: a later
+	// beginStreaming() must build from scratch rather than match against
+	// what this stream used to be.
+	memset(&armed, 0, sizeof(armed));
 	is_streaming = false;
 }
 

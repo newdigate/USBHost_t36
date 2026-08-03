@@ -39,3 +39,5 @@ test/test_itd
 test/test_itd.dSYM/
 test/test_pack
 test/test_pack.dSYM/
+test/test_uac2_parse
+test/test_uac2_parse.dSYM/

@@ -259,7 +259,11 @@ static void test_fill_in(void)
 {
 	static uint8_t buf[8] __attribute__ ((aligned(4)));
 	itd_t n;
-	memset(&n, 0, sizeof(n));
+	// Pool-recycled nodes arrive dirty (an OUT node is freed with up to 8
+	// live transactions), so the fill must be proven to clear every field it
+	// does not program -- a fresh-zeroed node cannot detect a missing zeroing
+	// loop. Poison with 0xA5 to make this explicit.
+	memset(&n, 0xA5, sizeof(n));
 
 	CHECK_EQ(itd_fill_in(&n, 9, 2, buf, 8, 4, false), true);
 

@@ -237,6 +237,38 @@ bool itd_fill_out(itd_t *node, uint8_t dev_addr, uint8_t endpoint,
 	return true;
 }
 
+bool itd_fill_in(itd_t *node, uint8_t dev_addr, uint8_t endpoint,
+                 void *buf, uint16_t len, uint16_t max_packet, bool ioc)
+{
+	if (!node || !buf) return false;
+	// 3072 is the EHCI ceiling for one microframe (Multi=3 of 1024); the
+	// 12-bit length field could encode more, and a larger value would be
+	// a lie the controller might act on.
+	if (len == 0 || len > 3072) return false;
+	if (max_packet == 0 || max_packet > 1024) return false;
+	if (endpoint > 15 || dev_addr > 127) return false;
+
+	uint32_t base = (uint32_t)(uintptr_t)buf;
+	uint32_t page0 = base & 0xFFFFF000u;
+	uint32_t off = base & 0xFFFu;
+
+	// One transaction, microframe 0. PG is 0 by construction (off < 4K);
+	// a read crossing into the next page rolls to bufptr[1] in hardware.
+	node->transaction[0] = ITD_TXN_ACTIVE
+	                     | ((uint32_t)len << ITD_TXN_LENGTH_SHIFT)
+	                     | (off & ITD_TXN_OFFSET_MASK)
+	                     | (ioc ? ITD_TXN_IOC : 0u);
+	for (int k = 1; k < 8; k++) node->transaction[k] = 0;
+
+	// Contiguous payload means consecutive physical pages, same as the
+	// OUT fill. Low bits per EHCI Table 3-6.
+	for (int i = 0; i < 7; i++) node->bufptr[i] = page0 + (uint32_t)i * 4096u;
+	node->bufptr[0] |= ((uint32_t)endpoint << 8) | dev_addr;
+	node->bufptr[1] |= ITD_BUFPTR1_DIR_IN | max_packet;
+	node->bufptr[2] |= 1u;              // Multi = 1
+	return true;
+}
+
 void itd_get_txn_status(const itd_t *node, unsigned txn, itd_txn_status_t *out)
 {
 	if (!out) return;

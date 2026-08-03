@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 static int failures = 0, checks = 0;
 #define CHECK_EQ(a, b) do { checks++; long _ck_a = (long)(a), _ck_b = (long)(b); \
@@ -254,6 +255,80 @@ static void test_mixed_run_guard(void)
 	if (n_itd > 1) CHECK_EQ(itd_nodes[1]->next, 0x01u);
 }
 
+static void test_fill_in(void)
+{
+	static uint8_t buf[8] __attribute__ ((aligned(4)));
+	itd_t n;
+	memset(&n, 0, sizeof(n));
+
+	CHECK_EQ(itd_fill_in(&n, 9, 2, buf, 8, 4, false), true);
+
+	// Exactly one transaction armed, in microframe 0: active, expected
+	// length 8 (the buffer room; the device sends at most max_packet and
+	// the controller writes the received count back), PG 0, offset =
+	// buffer's low 12 bits, no IOC.
+	uint32_t off = (uint32_t)(uintptr_t)buf & 0xFFFu;
+	CHECK_EQ(n.transaction[0],
+	         ITD_TXN_ACTIVE | (8u << ITD_TXN_LENGTH_SHIFT) | off);
+	for (int k = 1; k < 8; k++) CHECK_EQ(n.transaction[k], 0u);
+
+	// Page chain: page i = page 0 + i*4K; ep/dev in bufptr[0], DIRECTION
+	// + max packet in bufptr[1], Multi=1 in bufptr[2].
+	uint32_t page0 = (uint32_t)(uintptr_t)buf & 0xFFFFF000u;
+	CHECK_EQ(n.bufptr[0], page0 | (2u << 8) | 9u);
+	CHECK_EQ(n.bufptr[1], (page0 + 4096u) | ITD_BUFPTR1_DIR_IN | 4u);
+	CHECK_EQ(n.bufptr[2], (page0 + 8192u) | 1u);
+	for (int i = 3; i < 7; i++)
+		CHECK_EQ(n.bufptr[i], page0 + (uint32_t)i * 4096u);
+
+	// The direction bit is the whole difference between IN and OUT fills:
+	// an OUT fill of the same node must leave bit 11 clear.
+	uint16_t lens[8] = { 4, 0, 0, 0, 0, 0, 0, 0 };
+	CHECK_EQ(itd_fill_out(&n, 9, 2, buf, lens, 4, false), true);
+	CHECK_EQ(n.bufptr[1] & ITD_BUFPTR1_DIR_IN, 0u);
+
+	// IOC lands on the single transaction when asked.
+	CHECK_EQ(itd_fill_in(&n, 9, 2, buf, 8, 4, true), true);
+	CHECK_EQ(n.transaction[0] & ITD_TXN_IOC, ITD_TXN_IOC);
+
+	// Status read-back surfaces a completed IN's written-back length: the
+	// controller clears ACTIVE and replaces the length field with the
+	// received count (4 bytes of feedback inside an 8-byte expectation).
+	n.transaction[0] = (4u << ITD_TXN_LENGTH_SHIFT);
+	itd_txn_status_t st;
+	itd_get_txn_status(&n, 0, &st);
+	CHECK_EQ(st.active, false);
+	CHECK_EQ(st.length, 4);
+	CHECK_EQ(st.err_xact || st.err_babble || st.err_buffer, false);
+}
+
+static void test_fill_in_rejects(void)
+{
+	static uint8_t buf[8];
+	itd_t n, before;
+
+	// Every rejection leaves the descriptor untouched: fill with a
+	// recognisable pattern and compare the whole struct afterwards.
+	memset(&n, 0xA5, sizeof(n));
+	memcpy(&before, &n, sizeof(n));
+
+	CHECK_EQ(itd_fill_in(0, 9, 2, buf, 8, 4, false), false);
+	CHECK_EQ(itd_fill_in(&n, 9, 2, 0, 8, 4, false), false);
+	CHECK_EQ(itd_fill_in(&n, 9, 2, buf, 0, 4, false), false);     // len 0
+	CHECK_EQ(itd_fill_in(&n, 9, 2, buf, 3073, 4, false), false);  // > uframe max
+	CHECK_EQ(itd_fill_in(&n, 9, 2, buf, 8, 0, false), false);     // mps 0
+	CHECK_EQ(itd_fill_in(&n, 9, 2, buf, 8, 1025, false), false);  // mps > 1024
+	CHECK_EQ(itd_fill_in(&n, 9, 16, buf, 8, 4, false), false);    // endpoint width
+	CHECK_EQ(itd_fill_in(&n, 128, 2, buf, 8, 4, false), false);   // address width
+	CHECK_EQ(memcmp(&n, &before, sizeof(n)), 0);
+
+	// Boundary acceptances, so the guards reject only what they claim:
+	memset(&n, 0, sizeof(n));
+	CHECK_EQ(itd_fill_in(&n, 127, 15, buf, 8, 1024, false), true);
+	CHECK_EQ(itd_fill_in(&n, 9, 2, buf, 3072, 1024, false), true);
+	CHECK_EQ(itd_fill_in(&n, 9, 2, buf, 1, 1, false), true);
+}
+
 int main(void)
 {
 	test_itd_layout();
@@ -262,6 +337,8 @@ int main(void)
 	test_txn_status();
 	test_link_unlink();
 	test_mixed_run_guard();
+	test_fill_in();
+	test_fill_in_rejects();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

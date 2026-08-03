@@ -72,6 +72,9 @@ typedef struct itd_struct {
 #define ITD_TXN_PG_SHIFT     12u        // bits 14:12
 #define ITD_TXN_OFFSET_MASK  0x00000FFFu
 
+// Buffer pointer fields, EHCI 1.0 Table 3-6.
+#define ITD_BUFPTR1_DIR_IN   0x00000800u  // bufptr[1] bit 11: 1 = IN
+
 // Split-transaction budgeting for a full-speed isochronous OUT endpoint.
 // Returns false if the packet cannot be scheduled. On success writes the
 // start-split and complete-split masks.
@@ -152,6 +155,19 @@ bool itd_unlink(volatile uint32_t *frame_slot, itd_t *node);
 bool itd_fill_out(itd_t *node, uint8_t dev_addr, uint8_t endpoint,
                   const void *buf, const uint16_t len[8], uint16_t max_packet,
                   bool ioc_last);
+
+// Fill an iTD for one high-speed isochronous IN transaction in microframe 0:
+// the feedback-endpoint read (4 bytes of Q16.16 every bInterval, polled at
+// the 16 ms slot cadence like the FS reader). `len` is the room available in
+// `buf` (DMA-reachable); the device sends at most max_packet per transaction
+// and the controller writes the received count back into the transaction
+// length field (EHCI 1.0 Table 3-3 IN write-back), surfaced by
+// itd_get_txn_status() as .length. Direction is bufptr[1] bit 11, set here
+// and only here -- itd_fill_out leaves it clear. Returns false (descriptor
+// untouched) on nulls, len 0 or > 3072, max_packet 0 or > 1024,
+// endpoint > 15, or device address > 127.
+bool itd_fill_in(itd_t *node, uint8_t dev_addr, uint8_t endpoint,
+                 void *buf, uint16_t len, uint16_t max_packet, bool ioc);
 
 // Link an siTD into one periodic frame list slot, at the head of that frame's
 // list. `frame_slot` is &periodictable[frame]; the caller owns the table.

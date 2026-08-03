@@ -157,12 +157,18 @@ void USBAudioOut::disconnect()
 	ctrl_state = CTRL_IDLE;
 	err_xact = err_babble = err_buffer = short_sends = 0;
 	// Feedback state is deliberately NOT cleared here: like the OUT ring,
-	// the feedback descriptors stay linked across a detach and self-heal on
-	// re-attach (beginStreaming early-returns while is_streaming, and the
-	// re-claimed device's address flows into every re-arm). While the
-	// device is absent the reads complete with transaction errors, no
-	// report lands, and fb_frames_since ages the last one out -- sizing
-	// slews back to nominal + trim on its own.
+	// the feedback descriptors stay linked across a detach and self-heal
+	// on re-attach (beginStreaming early-returns while is_streaming, and
+	// the re-claimed device's address flows into every re-arm). While the
+	// device is absent service() pauses entirely -- the framework nulls
+	// `device`, so nothing is harvested or re-armed and the rate state is
+	// frozen rather than aged. On re-attach harvesting resumes where it
+	// stopped; a pre-detach feedback average may count as fresh for up to
+	// FB_FRESH_FRAMES more frames, which is benign -- it is the same
+	// device's crystal, and the slew re-converges within a second.
+	// Re-attaching a DIFFERENT class or alt does not re-arm the stream at
+	// all (is_streaming gates beginStreaming); that is a known gap,
+	// tracked separately, predating the feedback work.
 	memset(&topo, 0, sizeof(topo));
 }
 
@@ -517,6 +523,14 @@ void USBAudioOut::stopStreaming()
 void USBAudioOut::service()
 {
 	if (!is_streaming) return;
+
+	// The framework nulls `device` after disconnect() while the self-heal
+	// contract deliberately keeps descriptors linked and is_streaming set.
+	// Harvesting while absent would re-arm reads through the null device
+	// pointer (non-faulting on RT1176 only because address 0 is ITCM);
+	// pause instead -- descriptors sit retired until re-claim restores
+	// the device and its address flows into the next refill.
+	if (!device) return;
 
 	topUpFromTone();
 

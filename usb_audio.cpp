@@ -26,6 +26,15 @@ void USBAudioOut::init()
 bool USBAudioOut::claim(Device_t *dev, int type, const uint8_t *descriptors, uint32_t len)
 {
 	if (type != 0) return false;
+
+	// Capture the raw descriptors for lastConfig() before any rejection, so
+	// unsupported devices can be dumped from loop() and become parser
+	// fixtures. memcpy only: this runs in enumeration context, where a
+	// Serial print is fatal to the enumeration itself (measured).
+	cfg_dump_truncated = len > sizeof(cfg_dump);
+	cfg_dump_len = cfg_dump_truncated ? (uint16_t)sizeof(cfg_dump) : (uint16_t)len;
+	memcpy(cfg_dump, descriptors, cfg_dump_len);
+
 	if (!uac1_parse_config(descriptors, len, &topo)) return false;
 	if (topo.bcd_adc != 0x0100) return false;   // UAC1 only
 

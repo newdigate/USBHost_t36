@@ -165,6 +165,19 @@ public:
     const UAC1Topology &topology() const { return topo; }
     int alternateSetting() const { return active_alt; }
 
+    // Raw configuration descriptors of the last device offered to claim(),
+    // captured whether or not the claim succeeded. This exists for compat
+    // work: a sketch can hex-dump an unrecognised device's descriptors from
+    // loop() context and turn them into a parser fixture. claim() only
+    // memcpys here -- printing from enumeration context is not survivable
+    // (measured: a Serial print inside claim() kills enumeration outright).
+    // Truncated captures report the buffer size; check configWasTruncated().
+    const uint8_t *lastConfig(uint16_t *len) const {
+        if (len) *len = cfg_dump_len;
+        return cfg_dump;
+    }
+    bool configWasTruncated() const { return cfg_dump_truncated; }
+
 protected:
     virtual bool claim(Device_t *device, int type, const uint8_t *descriptors, uint32_t len);
     virtual void disconnect();
@@ -252,6 +265,13 @@ private:
     bool requestSampleRate(const UAC1AltSetting *alt);
     void fillFrame(uint8_t *dst, uint16_t bytes);
     void topUpFromTone();
+
+    // Descriptor capture for lastConfig(). 768 covers every UAC1/UAC2
+    // config seen on this bench (a UAC2 8ch topology is ~400 bytes) with
+    // headroom; larger sets are truncated and flagged, never overrun.
+    uint8_t  cfg_dump[768];
+    uint16_t cfg_dump_len = 0;
+    bool     cfg_dump_truncated = false;
 
     usb_audio_fifo_t fifo;
     void (*frame_cb)(void) = 0;

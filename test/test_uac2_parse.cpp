@@ -248,6 +248,41 @@ static void test_survives_truncation(void)
 	CHECK(uac2_parse_config(fixture, 231, &t));
 }
 
+static void test_feedback_mps_high_byte(void)
+{
+	// The real fixture's feedback endpoints both advertise wMaxPacketSize 4
+	// (0x0004), which has a zero high byte. This lets a mutant that drops
+	// the `| ((uint16_t)b[5] << 8)` term still pass the baseline tests,
+	// because (4 | 0) == 4. Patch the wMaxPacketSize to a nonzero high-byte
+	// value and re-parse to catch byte-drop mutants.
+	static uint8_t buf[sizeof(fixture)];
+	memcpy(buf, fixture, fixture_len);
+
+	// Find every 7-byte feedback-EP descriptor matching the pattern
+	// {0x07, 0x05, 0x82, 0x11, 0x04, 0x00, 0x04} and patch the wMaxPacketSize
+	// bytes (offsets +4, +5) to 0x04, 0x03 -- i.e. 0x0304 = 772.
+	const uint8_t needle[] = {0x07, 0x05, 0x82, 0x11, 0x04, 0x00, 0x04};
+	size_t needle_len = sizeof(needle);
+	size_t occurrence_count = 0;
+	for (size_t i = 0; i + needle_len <= fixture_len; i++) {
+		if (memcmp(buf + i, needle, needle_len) == 0) {
+			occurrence_count++;
+			buf[i + 4] = 0x04;
+			buf[i + 5] = 0x03;
+		}
+	}
+	CHECK_EQ(occurrence_count, 2);  // both alts on the streaming interface
+
+	// Re-parse the patched buffer and verify both alts now report the
+	// nonzero high-byte value (772 = 0x0304), not the mutant's dropped value.
+	UAC1Topology t;
+	CHECK(uac2_parse_config(buf, fixture_len, &t));
+	CHECK_EQ(t.alts[1].feedback_endpoint, 0x82);
+	CHECK_EQ(t.alts[1].feedback_max_packet, 772);
+	CHECK_EQ(t.alts[2].feedback_endpoint, 0x82);
+	CHECK_EQ(t.alts[2].feedback_max_packet, 772);
+}
+
 int main(void)
 {
 	load_fixture();
@@ -260,6 +295,7 @@ int main(void)
 	test_finds_alt_by_format();
 	test_parses_with_config_header_prefix();
 	test_survives_truncation();
+	test_feedback_mps_high_byte();
 	if (failures == 0) { printf("test_uac2_parse: all %d checks passed\n", checks); return 0; }
 	printf("test_uac2_parse: %d/%d FAILED\n", failures, checks);
 	return 1;

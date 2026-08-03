@@ -633,6 +633,20 @@ void USBAudioOut::service()
 	// the device and its address flows into the next refill.
 	if (!device) return;
 
+	// Never stream to a device whose alternate setting is not selected.
+	// `device` alone is not enough: after a re-claim the descriptors are
+	// refilled with the NEW device's address, so a stream left armed from
+	// the previous device retargets itself at one sitting in alt 0 and
+	// blasts isochronous audio at an endpoint that has no bandwidth
+	// reserved. Pausing until the sequence completes is what the ring
+	// already does at first start; this makes a re-claim behave the same.
+	//
+	// This was investigated as a cause of the post-re-enumeration control
+	// wedge and is NOT that (gating it changed pkts/s from 1000 to 0 and
+	// the wedge persisted, measured 2026-08-03). It is kept because
+	// sending audio to an unconfigured device is wrong on its own terms.
+	if (active_alt < 0) return;
+
 	topUpFromTone();
 
 	if (is_uac2) {

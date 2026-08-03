@@ -408,6 +408,23 @@ bool USBAudioOut::beginStreamingHS(const UAC1AltSetting *alt)
 	alt_mps_hs = alt->max_packet_size < MAX_UFRAME_BYTES
 	           ? alt->max_packet_size : MAX_UFRAME_BYTES;
 
+	// The feedback reader is transport-independent in principle, but its
+	// siTD splits are FS machinery; the UAC2 feedback endpoint needs an
+	// iTD reader (P3). Leave feedback unarmed: open-loop at nominal is
+	// this phase's declared operating point and the gate's expected
+	// signature (the device drifts at its measured ~-86 ppm).
+	//
+	// This block must run BEFORE the arming loop: fillFrameHS() sizes its
+	// microframes from fb_sizing_mhz, and an unseeded (zero) rate makes
+	// every length zero, which itd_fill_out correctly refuses -- the
+	// first hardware gate failed exactly there.
+	fb_endpoint = 0;
+	fb_rate_mhz = 0;
+	fb_avg_mhz = 0;
+	fb_frames_since = 0xFFFFFF;
+	fb_packets = fb_rejects = fb_errors = 0;
+	fb_sizing_mhz = effectiveRateMilliHz();
+
 	frame_accum = 0;
 	usb_audio_fifo_reset(&fifo);
 	topUpFromTone();
@@ -421,18 +438,6 @@ bool USBAudioOut::beginStreamingHS(const UAC1AltSetting *alt)
 		}
 		itd_link(periodic_frame_slot(i), ring_hs[i], (uint16_t)i);
 	}
-
-	// The feedback reader is transport-independent in principle, but its
-	// siTD splits are FS machinery; the UAC2 feedback endpoint needs an
-	// iTD reader (P3). Leave feedback unarmed: open-loop at nominal is
-	// this phase's declared operating point and the gate's expected
-	// signature (the device drifts at its measured ~-86 ppm).
-	fb_endpoint = 0;
-	fb_rate_mhz = 0;
-	fb_avg_mhz = 0;
-	fb_frames_since = 0xFFFFFF;
-	fb_packets = fb_rejects = fb_errors = 0;
-	fb_sizing_mhz = effectiveRateMilliHz();
 
 	packets_sent = 0;
 	underrun_count = 0;

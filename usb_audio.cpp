@@ -431,49 +431,40 @@ bool USBAudioOut::beginStreaming()
 	frame_accum = 0;
 	usb_audio_fifo_reset(&fifo);
 	topUpFromTone();
-	// Prime in WIRE order, not slot order. The controller starts
-	// transmitting at its CURRENT frame position, so filling 0..31 in index
-	// order plays the whole first ring revolution rotated -- chunks F..31
-	// first, then 0..F-1 -- with a payload seam at the first refill. For
-	// audio that is 32 ms of out-of-order samples once per stream start,
-	// inaudible and invisible to every counter; under the validator's
-	// pattern it is a guaranteed discontinuity, which is how it was found
-	// (first cooperative run: first_error_index landed at exactly one ring
-	// revolution plus one). +2 is the same not-already-walked margin as
-	// postTestPacket(). The two slots behind the start position transmit
-	// BEFORE the first filled slot, so they stay INERT (linked disarmed) on
-	// their first pass rather than carrying the ring's newest chunks --
-	// armed, they re-create the seam one revolution later at their stale
-	// non-retransmission, which the HS pattern rerun measured exactly.
-	// ring_next starts AT them so service() hands them the next chunks
-	// within microseconds, a full revolution before their frames come up.
-	// Ring index == frame-list index: RING_SLOTS matches the controller's
-	// PERIODIC_LIST_SIZE, which the 0..31 linking below always assumed.
-	uint32_t start = periodic_current_frame() + 2;
-	for (uint32_t k = 0; k < RING_SLOTS; k++) {
-		uint32_t i = (start + k) % RING_SLOTS;
-		if (k < RING_SLOTS - 2) {
-			uint16_t bytes = uac1_frame_bytes_mhz(&frame_accum,
-			                                      effectiveRateMilliHz(),
-			                                      req_channels, req_bits / 8);
-			if (bytes == 0 || bytes > MAX_FRAME_BYTES) { stopStreaming(); return false; }
-			fillFrame(ring_buf[i], bytes);
-			// ioc=false: service() polls the status word, so interrupt-on-
-			// complete would only add ~1000 IRQ/s into an ISR with no siTD
-			// handling.
-			if (!sitd_fill_out(ring[i], device->address, iso_endpoint, 0, 0,
-			                   ring_buf[i], bytes, 0, false)) {
-				stopStreaming();
-				return false;
-			}
-		} else {
-			// Alloc recycles without zeroing: a stale ACTIVE bit here is a
-			// transmission from a previous life's buffer.
-			sitd_disarm(ring[i]);
+	// Index order, all 32 slots armed. This is deliberately NOT the wire-order
+	// priming the HS ring uses.
+	//
+	// The HS ring was seaming at every stream start -- the controller begins
+	// transmitting at its current frame position, so an index-order fill plays
+	// the first revolution rotated -- and the validator's cooperative pattern
+	// measured that directly (R7 first_error_index at exactly one revolution).
+	// The same reasoning applies here in principle, and the same fix was
+	// applied to this ring in 3e66161. On silicon it stopped the FS stream
+	// dead: claim and beginStreaming both succeed, then packets_sent never
+	// moves and the FIFO sits full. The corpus's clean-host control caught it.
+	//
+	// So this ring goes back to the behaviour that demonstrably works. FS keeps
+	// the 32 ms start-of-stream seam, which is inaudible and which no
+	// instrument on this bench can currently see: R7 needs a cooperative
+	// witness, and the UAC1 witness cannot carry the 24-bit pattern in a 2-byte
+	// subslot. Fixing FS properly means building that witness first -- a fix
+	// that cannot be verified is not a fix, and this is the second time that
+	// lesson has been paid for on this ring.
+	for (uint32_t i = 0; i < RING_SLOTS; i++) {
+		uint16_t bytes = uac1_frame_bytes_mhz(&frame_accum, effectiveRateMilliHz(),
+		                                      req_channels, req_bits / 8);
+		if (bytes == 0 || bytes > MAX_FRAME_BYTES) { stopStreaming(); return false; }
+		fillFrame(ring_buf[i], bytes);
+		// ioc=false: service() polls the status word, so interrupt-on-
+		// complete would only add ~1000 IRQ/s into an ISR with no siTD
+		// handling.
+		if (!sitd_fill_out(ring[i], device->address, iso_endpoint, 0, 0,
+		                   ring_buf[i], bytes, 0, false)) {
+			stopStreaming();
+			return false;
 		}
 		sitd_link(periodic_frame_slot(i), ring[i], (uint16_t)i);
 	}
-	ring_next = (start + RING_SLOTS - 2) % RING_SLOTS;
 
 	// Arm the feedback reader if this alternate setting advertises one.
 	// Failure to arm is not failure to stream: the loop just stays open,
@@ -873,17 +864,17 @@ void USBAudioOut::service()
 		             fb_buf[k], sizeof(fb_buf[k]), 0, false);
 	}
 
-	// Wire order with early exit, exactly as the HS loop above -- the FS ring
-	// has the same wrap-straddle rotation otherwise.
-	uint32_t serviced = 0;
-	while (serviced < RING_SLOTS) {
-		uint32_t i = (ring_next + serviced) % RING_SLOTS;
+	// Index scan that SKIPS rather than stopping at the first busy slot --
+	// paired with the index-order priming above. The wire-order variant with an
+	// early exit is correct for the HS ring and wrong here; see the note in
+	// beginStreaming().
+	for (uint32_t i = 0; i < RING_SLOTS; i++) {
 		sitd_t *s = ring[i];
-		if (!s) break;
+		if (!s) continue;
 
 		sitd_status_t st;
 		sitd_get_status(s, &st);
-		if (st.active) break;                // hardware has not run it yet
+		if (st.active) continue;             // hardware has not run it yet
 
 		// Record what the controller reported about the packet just finished,
 		// before the descriptor is reused. A failed split transaction leaves
@@ -913,7 +904,7 @@ void USBAudioOut::service()
 		// stream drifts against the device's clock.
 		uint16_t bytes = uac1_frame_bytes_mhz(&frame_accum, fb_sizing_mhz,
 		                                      req_channels, req_bits / 8);
-		if (bytes == 0 || bytes > MAX_FRAME_BYTES) { serviced++; continue; }
+		if (bytes == 0 || bytes > MAX_FRAME_BYTES) continue;
 		fillFrame(ring_buf[i], bytes);
 		if (sitd_fill_out(s, device->address, iso_endpoint, 0, 0,
 		                  ring_buf[i], bytes, 0, false)) {
@@ -923,7 +914,5 @@ void USBAudioOut::service()
 			// than a free-running one (design spec section 8).
 			if (frame_cb) frame_cb();
 		}
-		serviced++;
 	}
-	ring_next = (ring_next + serviced) % RING_SLOTS;
 }

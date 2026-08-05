@@ -156,6 +156,26 @@ public:
     // falling back to generated audio. 0 disables.
     void tone(uint32_t hz) { tone_hz = hz; }
 
+    // --- cooperative-mode test pattern (UAC validator R7) ---
+    //
+    // When on, the HS packing path swaps the payload for the validator's
+    // LFSR sequence (uacv_pack_pattern); a device built with
+    // UACV_COOPERATIVE=1 regenerates it and counts discontinuities, which is
+    // the only instrument that can see this host drop or duplicate samples.
+    // Everything else is unchanged on purpose: packets are still sized by
+    // the feedback servo and the FIFO is still drained sample-for-sample, so
+    // a producer must keep it fed exactly as in normal streaming and an
+    // underrun still sends silence WITHOUT advancing the pattern -- the
+    // device records the discontinuity instead of the host papering over it.
+    //
+    // The FS path and 16-bit subslots cannot carry the 24-bit sequence;
+    // frames that had to fall back to normal packing are counted so a
+    // misconfigured bench reads as a climbing number here rather than as a
+    // mystery never-locked SKIP in the judge's report.
+    void patternMode(bool on) { pat_on = on; pat_primed = false; }
+    bool patternModeActive() const { return pat_on; }
+    uint32_t patternFallbacks() const { return pat_fallbacks; }
+
     // Completion status written back by the controller. Valid a frame or two
     // after postTestPacket(). Active false with no error bits and bytes_left
     // zero means the packet went out -- this is the primary verification,
@@ -306,6 +326,10 @@ private:
     uint32_t short_sends    = 0;
     uint32_t tone_hz        = 0;
     uint32_t tone_phase     = 0;
+    bool     pat_on         = false;
+    bool     pat_primed     = false;
+    uint32_t pat_lfsr       = 0;
+    uint32_t pat_fallbacks  = 0;
     uint8_t  iso_endpoint   = 0;
     uint32_t frame_accum    = 0;   // fractional samples-per-frame carry, in mHz
     int32_t  rate_bias_ppm  = 0;

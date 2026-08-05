@@ -161,4 +161,32 @@ bool uac_stream_config_equal(const UACStreamConfig *a, const UACStreamConfig *b)
 uint32_t uac_pack16(uint8_t *dst, const int16_t *src, uint32_t frames,
                     uint8_t ch_live, uint8_t ch_total, uint8_t subslot);
 
+// Cooperative-mode test pattern for the UAC host validator's R7 rule. Fills
+// `frames` frames of ch_total x subslot bytes with the validator's Galois
+// LFSR sequence -- one fresh value per SAMPLE across all channels, because
+// the device checks every subslot it unpacks in arrival order -- 24-bit
+// left-justified so it survives the same packing convention as audio. The
+// device (lib_xua observer built with UACV_COOPERATIVE=1) regenerates the
+// identical sequence and counts discontinuities: the only check that can
+// catch this host dropping or duplicating samples, which no host-side
+// counter can see.
+//
+// Seed and taps must match the device's decouple.xc exactly; they are the
+// contract, not a tunable.
+//
+// *lfsr carries the shift register between calls; *primed false makes the
+// next value the seed itself, which is the device's lock target. The seed
+// is emitted exactly once per priming -- the sequence does not revisit it
+// within any capture -- so re-priming mid-stream guarantees the device
+// records a discontinuity, which is the honest outcome for a stream that
+// actually restarted.
+//
+// Returns bytes written; 0 when the geometry cannot carry the sequence
+// (subslot < 3 drops LFSR bits the device checks) or for null pointers.
+// Callers must treat 0 as "pattern NOT sent", never as an empty success.
+#define UACV_PATTERN_SEED 0xACE1u
+#define UACV_PATTERN_TAPS 0xB4BCD35Cu
+uint32_t uacv_pack_pattern(uint8_t *dst, uint32_t frames, uint8_t ch_total,
+                           uint8_t subslot, uint32_t *lfsr, bool *primed);
+
 #endif // USB_AUDIO_PARSE_H_

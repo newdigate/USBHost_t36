@@ -295,8 +295,20 @@ void USBAudioOut::fillFrameHS(uint32_t slot)
 		int16_t staged[8 * 2];        // up to 8 frames of live stereo per uframe at 48k+slack
 		if (frames * 2 <= sizeof(staged) / sizeof(staged[0])
 		    && usb_audio_fifo_read(&fifo, staged, frames * 2)) {
-			uac_pack16(ring_buf_hs[slot] + off, staged, frames, 2,
-			           ch_total_out, subslot_out);
+			// Pattern mode swaps only the payload: the FIFO read above
+			// still paces the stream, so a starved producer underruns
+			// exactly as it would with real audio. A geometry the pattern
+			// cannot carry falls back to the staged audio and is counted --
+			// silently sending non-pattern data would read at the judge as
+			// "host not bit-exact", an accusation with the wrong culprit.
+			if (!pat_on || !uacv_pack_pattern(ring_buf_hs[slot] + off,
+			                                  frames, ch_total_out,
+			                                  subslot_out, &pat_lfsr,
+			                                  &pat_primed)) {
+				if (pat_on) pat_fallbacks++;
+				uac_pack16(ring_buf_hs[slot] + off, staged, frames, 2,
+				           ch_total_out, subslot_out);
+			}
 		} else {
 			for (uint32_t b = 0; b < bytes; b++) ring_buf_hs[slot][off + b] = 0;
 			underrun_count++;
@@ -506,6 +518,11 @@ bool USBAudioOut::beginStreamingHS(const UAC1AltSetting *alt)
 
 	frame_accum = 0;
 	usb_audio_fifo_reset(&fifo);
+	// Re-prime the pattern with the ring: the seed must be the first sample
+	// on the wire, or the device hunts for a lock target that already went
+	// past. A re-begin mid-capture still reads as a discontinuity at the
+	// device -- the honest verdict for a stream that genuinely restarted.
+	pat_primed = false;
 	topUpFromTone();
 	for (uint32_t i = 0; i < RING_SLOTS; i++) {
 		ring_hs[i] = itd_alloc();

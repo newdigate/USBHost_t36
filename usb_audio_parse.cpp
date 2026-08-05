@@ -246,6 +246,34 @@ uint32_t uac_pack16(uint8_t *dst, const int16_t *src, uint32_t frames,
 	return (uint32_t)(p - dst);
 }
 
+uint32_t uacv_pack_pattern(uint8_t *dst, uint32_t frames, uint8_t ch_total,
+                           uint8_t subslot, uint32_t *lfsr, bool *primed)
+{
+	if (!dst || !lfsr || !primed || subslot < 3 || subslot > 4) return 0;
+	uint8_t *p = dst;
+	for (uint32_t f = 0; f < frames; f++) {
+		for (uint8_t c = 0; c < ch_total; c++) {
+			if (!*primed) {
+				*lfsr = UACV_PATTERN_SEED;
+				*primed = true;
+			} else {
+				uint32_t lsb = *lfsr & 1u;
+				*lfsr >>= 1;
+				if (lsb) *lfsr ^= UACV_PATTERN_TAPS;
+			}
+			// The device's expected word is (lfsr << 8): 24 significant
+			// bits, low byte clear. Emit exactly that, little-endian, with
+			// the pad byte at the least-significant end like uac_pack16.
+			uint32_t v = *lfsr << 8;
+			if (subslot == 4) *p++ = 0;
+			*p++ = (uint8_t)(v >> 8);
+			*p++ = (uint8_t)(v >> 16);
+			*p++ = (uint8_t)(v >> 24);
+		}
+	}
+	return (uint32_t)(p - dst);
+}
+
 void uac_stream_config(UACStreamConfig *out, bool is_uac2, const UAC1AltSetting *alt)
 {
 	if (!out) return;

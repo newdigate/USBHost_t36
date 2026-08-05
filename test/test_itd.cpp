@@ -31,15 +31,17 @@ static void test_itd_layout(void)
 static void test_itd_pool(void)
 {
 	itd_pool_init();
-	itd_t *seen[64];
+	itd_t *seen[80];
 	int n = 0;
 	itd_t *node;
-	while (n < 64 && (node = itd_alloc()) != NULL) {
+	while (n < 80 && (node = itd_alloc()) != NULL) {
 		CHECK_EQ(((uintptr_t)node) % 32, 0);
 		for (int i = 0; i < n; i++) CHECK_EQ(node == seen[i], false);
 		seen[n++] = node;
 	}
-	CHECK_EQ(n, 40);                       // spec section 4: 40-node pool
+	// 32-slot OUT ring + 32-slot full-rate feedback reader, drained to
+	// exactly zero at arm time by design (see ITD_POOL_SIZE).
+	CHECK_EQ(n, 64);
 	CHECK_EQ((void *)itd_alloc(), (void *)0);
 	itd_free(seen[0]);
 	CHECK_EQ((void *)itd_alloc(), (void *)seen[0]);

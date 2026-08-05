@@ -58,10 +58,10 @@ uint32_t uac1_fb_average(uint32_t avg_mhz, uint32_t sample_mhz, uint32_t div)
 	// div is the caller's poll rate divided by ~7.8: the filter's time
 	// constant is div/poll_rate, and holding it at ~128 ms is load-bearing
 	// -- chasing the device's report dither with a shorter horizon measured
-	// +4.8 ppm on this bench. 8 at 62.5 polls/s and 32 at 250 polls/s are
-	// the same 128 ms filter fed 4x more reports, which is where the noise
-	// reduction comes from; a caller raising the poll rate WITHOUT scaling
-	// div is quietly shortening the horizon.
+	// +4.8 ppm on this bench. 8 at 62.5 polls/s and 128 at 1000 polls/s
+	// are the same 128 ms filter fed more reports, which is where the
+	// noise reduction comes from; a caller raising the poll rate WITHOUT
+	// scaling div is quietly shortening the horizon.
 	int32_t d = (int32_t)sample_mhz - (int32_t)avg_mhz;
 	int32_t half = (int32_t)(div / 2);
 	int32_t step = (d >= 0) ? (d + half) / (int32_t)div

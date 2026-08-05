@@ -52,8 +52,8 @@ uint32_t uac1_rate_slew(uint32_t current_mhz, uint32_t target_mhz,
 // alternating input is the midpoint, not a walk toward one rail.
 //
 // div sets the time constant: div/poll_rate, which must stay at ~128 ms
-// (the dither lesson above). 8 at 62.5 polls/s (FS), 32 at 250 polls/s
-// (HS) -- same horizon, 4x more reports averaged into it. div < 1 is
+// (the dither lesson above). 8 at 62.5 polls/s (FS), 128 at 1000 polls/s
+// (HS) -- same horizon, more reports averaged into it. div < 1 is
 // clamped to 1 (adopt each sample), never a divide by zero.
 uint32_t uac1_fb_average(uint32_t avg_mhz, uint32_t sample_mhz, uint32_t div);
 

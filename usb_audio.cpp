@@ -596,14 +596,13 @@ bool USBAudioOut::beginStreamingHS(const UAC1AltSetting *alt)
 	// stream, the loop just stays open at nominal + trim. The HS report
 	// is 4 bytes of Q16.16 samples-per-microframe on an iso IN endpoint;
 	// one iTD transaction in microframe 0 of each polled slot reads it.
-	// The witness refreshes every 1 ms (bInterval 4); eight slots 4
-	// frames apart read it at 250/s -- the matched-soak baseline showed
-	// poll rate as the dominant FIFO-envelope effect (916 B unmatched vs
-	// 104-264 B matched), and 8 is the iTD pool's ceiling. The EMA
-	// divisor scales with the rate to hold the ~128 ms horizon; see
-	// FB_SLOTS_HS in the header. An MPS of 0 (malformed descriptor) or
-	// beyond the read buffer leaves the loop open rather than arming a
-	// read that cannot land.
+	// The witness refreshes every 1 ms (bInterval 4) and one slot per
+	// frame reads EVERY report -- anything less subsamples the dither
+	// duty and aliases it into a slow rate wander the device's FIFO
+	// integrates (measured at 250/s; see FB_SLOTS_HS in the header). The
+	// EMA divisor scales with the rate to hold the ~128 ms horizon. An
+	// MPS of 0 (malformed descriptor) or beyond the read buffer leaves
+	// the loop open rather than arming a read that cannot land.
 	if (alt->feedback_endpoint && alt->feedback_max_packet &&
 	    alt->feedback_max_packet <= sizeof(fb_buf[0])) {
 		fb_endpoint = alt->feedback_endpoint & 0x0F;
@@ -621,9 +620,9 @@ bool USBAudioOut::beginStreamingHS(const UAC1AltSetting *alt)
 				stopFeedback();
 				break;
 			}
-			// Slots 4 frames apart: each recurs every 32 ms, together
-			// 250 polls/s.
-			uint16_t frame = (uint16_t)(k * 4);
+			// One slot per frame: each recurs every 32 ms, together
+			// 1000 polls/s -- every report the device publishes.
+			uint16_t frame = (uint16_t)k;
 			itd_link(periodic_frame_slot(frame), fb_itd[k], frame);
 		}
 	}

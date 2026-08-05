@@ -131,9 +131,10 @@ static void test_average(void)
 
 static void test_average_divisor(void)
 {
-	// div sets the time constant (div / poll_rate); the HS reader runs
-	// 1/32 at 250 polls/s so both configurations hold the same ~128 ms
-	// horizon. One step moves 1/32 of the distance.
+	// div sets the time constant (div / poll_rate); the divisor scales
+	// with the caller's poll rate so every configuration holds the same
+	// ~128 ms horizon (the HS reader ships 1/128 at 1000 polls/s). The
+	// mechanism is checked here at div 32: one step moves 1/32.
 	CHECK_EQ(uac1_fb_average(44095703, 44096314, 32), 44095722);  // +611/32=+19
 	CHECK_EQ(uac1_fb_average(44096314, 44095703, 32), 44096295);  // -611/32=-19
 

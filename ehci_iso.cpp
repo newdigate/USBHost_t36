@@ -76,9 +76,15 @@ bool sitd_budget_in(uint16_t max_packet, uint8_t start_uframe,
 // pipe could never be armed. Also the bound on how many isochronous
 // descriptors one frame can hold (see sitd_skip_iso).
 #define SITD_POOL_SIZE 40
-// Same count for the HS ring: 32 periodic slots + feedback + headroom
-// (design spec 2026-08-02-uac2-audio-out-design.md section 4).
-#define ITD_POOL_SIZE  40
+// The HS ring plus a full-rate feedback reader: 32 periodic OUT slots and
+// 32 feedback IN slots, one per frame. Full-rate polling is not a luxury --
+// subsampling the device's 1000/s reports aliases their dither duty into a
+// slowly wandering rate estimate the FIFO then integrates (measured at
+// 250 polls/s: >10 s fill drift predicted from the sampled reports with
+// correlation +0.91, and no filter horizon fixes it; see the evkb repo's
+// transcript_uacv_servo_isolation.txt). Arming a stream drains this pool
+// to exactly zero by design.
+#define ITD_POOL_SIZE  64
 
 // Any iso descriptor from either pool can legally occupy a frame's iso
 // run, so every bounded walker over that run must tolerate the combined

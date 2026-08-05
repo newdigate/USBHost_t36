@@ -343,26 +343,30 @@ private:
     int32_t  rate_bias_ppm  = 0;
 
     // Feedback pipe state. FS: two descriptors 16 frames apart on the
-    // 32-slot periodic list = 62.5 polls/s, bRefresh=4's exact rate, and
-    // the matched-soak baseline holds a ~200 B FIFO envelope there. HS:
-    // eight descriptors 4 frames apart = 250 polls/s. The baseline
-    // measured poll rate as the dominant envelope effect -- the one cell
-    // polling 62.5/s against a device reporting 1000/s held 916 B where
-    // every matched cell held 104-264 B -- and 8 slots is the ceiling
-    // without growing the iTD pool: ITD_POOL_SIZE is 40 and the OUT ring
-    // takes 32, so arming HS feedback drains the pool to exactly zero.
+    // 32-slot periodic list = 62.5 polls/s -- bRefresh=4's exact rate, so
+    // every report is read once. HS: one descriptor per frame = 1000
+    // polls/s, the device's own refresh rate, for the same reason. This is
+    // not about bandwidth: the report dithers between adjacent quanta and
+    // the information is the dither's DUTY CYCLE, so a host that
+    // subsamples aliases the duty against its poll phase and integrates
+    // the resulting slow wander into the device's FIFO. Measured at
+    // 250 polls/s: the entire >10 s fill-drift band, predicted from the
+    // sampled reports with correlation +0.91, invariant across filter
+    // horizons -- no filter fixes sampling (transcript_uacv_servo_
+    // isolation.txt). Reading every report is the fix; 32 slots plus the
+    // 32-slot OUT ring drain ITD_POOL_SIZE (64) to exactly zero.
     // The EMA divisor scales with the poll rate to hold the ~128 ms
-    // horizon (see uac1_fb_average): 4x the reports into the same filter,
+    // horizon (see uac1_fb_average): more reports into the same filter,
     // never a shorter filter.
     //
     // 8 bytes of room per read: the FS report is 3 bytes, the HS report
     // 4, and anything else that arrives is counted as a reject rather
     // than a buffer error.
     static const uint32_t FB_SLOTS = 2;          // FS reader
-    static const uint32_t FB_SLOTS_HS = 8;       // HS reader (pool ceiling)
-    static const uint32_t FB_SLOTS_MAX = 8;      // array sizing
+    static const uint32_t FB_SLOTS_HS = 32;      // HS reader: every frame
+    static const uint32_t FB_SLOTS_MAX = 32;     // array sizing
     static const uint32_t FB_EMA_DIV = 8;        // 1/8 at 62.5 polls/s
-    static const uint32_t FB_EMA_DIV_HS = 32;    // 1/32 at 250 polls/s
+    static const uint32_t FB_EMA_DIV_HS = 128;   // 1/128 at 1000 polls/s
     static const uint32_t FB_FRESH_FRAMES = 250;
     static const uint32_t FB_SLEW_MHZ_PER_FRAME = 4;   // ~90 ppm/s at 44.1k
     sitd_t  *fb_sitd[FB_SLOTS_MAX] = {};

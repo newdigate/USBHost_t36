@@ -42,14 +42,19 @@ bool uac1_feedback_plausible(uint32_t fb_mhz, uint32_t nominal_mhz);
 uint32_t uac1_rate_slew(uint32_t current_mhz, uint32_t target_mhz,
                         uint32_t max_step_mhz);
 
-// Exponential moving average of feedback reports, 1/8 per step (~128 ms at
-// the 16 ms refresh). Devices dither the report between adjacent values to
-// express rates in between; the servo must follow the duty-weighted mean of
-// that dither, and a rate-limited follower of the raw reports cannot -- it
-// converges to the majority state instead (measured on this bench as a
-// +4.8 ppm sizing bias, which is a buffer excursion every ~45 min). Seeding:
-// avg 0 adopts the sample outright. Rounding is symmetric so the equilibrium
-// under alternating input is the midpoint, not a walk toward one rail.
-uint32_t uac1_fb_average(uint32_t avg_mhz, uint32_t sample_mhz);
+// Exponential moving average of feedback reports, 1/div per step. Devices
+// dither the report between adjacent values to express rates in between;
+// the servo must follow the duty-weighted mean of that dither, and a
+// rate-limited follower of the raw reports cannot -- it converges to the
+// majority state instead (measured on this bench as a +4.8 ppm sizing bias,
+// which is a buffer excursion every ~45 min). Seeding: avg 0 adopts the
+// sample outright. Rounding is symmetric so the equilibrium under
+// alternating input is the midpoint, not a walk toward one rail.
+//
+// div sets the time constant: div/poll_rate, which must stay at ~128 ms
+// (the dither lesson above). 8 at 62.5 polls/s (FS), 32 at 250 polls/s
+// (HS) -- same horizon, 4x more reports averaged into it. div < 1 is
+// clamped to 1 (adopt each sample), never a divide by zero.
+uint32_t uac1_fb_average(uint32_t avg_mhz, uint32_t sample_mhz, uint32_t div);
 
 #endif // USB_AUDIO_FEEDBACK_H_

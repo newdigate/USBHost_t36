@@ -342,21 +342,33 @@ private:
     uint32_t frame_accum    = 0;   // fractional samples-per-frame carry, in mHz
     int32_t  rate_bias_ppm  = 0;
 
-    // Feedback pipe state. Two descriptors 16 frames apart give a 16 ms
-    // cadence on a 32-slot periodic list where each slot recurs every
-    // 32 ms: bRefresh=4's exact rate at FS, and a 16x subsample of the
-    // witness's 1 ms bInterval at HS -- the EMA's ~128 ms horizon needs
-    // no faster feed (UAC1 soak: +0.1 ppm at this cadence). 8 bytes of
-    // room per read: the FS report is 3 bytes, the HS report 4, and
-    // anything else that arrives is counted as a reject rather than a
-    // buffer error.
-    static const uint32_t FB_SLOTS = 2;
+    // Feedback pipe state. FS: two descriptors 16 frames apart on the
+    // 32-slot periodic list = 62.5 polls/s, bRefresh=4's exact rate, and
+    // the matched-soak baseline holds a ~200 B FIFO envelope there. HS:
+    // eight descriptors 4 frames apart = 250 polls/s. The baseline
+    // measured poll rate as the dominant envelope effect -- the one cell
+    // polling 62.5/s against a device reporting 1000/s held 916 B where
+    // every matched cell held 104-264 B -- and 8 slots is the ceiling
+    // without growing the iTD pool: ITD_POOL_SIZE is 40 and the OUT ring
+    // takes 32, so arming HS feedback drains the pool to exactly zero.
+    // The EMA divisor scales with the poll rate to hold the ~128 ms
+    // horizon (see uac1_fb_average): 4x the reports into the same filter,
+    // never a shorter filter.
+    //
+    // 8 bytes of room per read: the FS report is 3 bytes, the HS report
+    // 4, and anything else that arrives is counted as a reject rather
+    // than a buffer error.
+    static const uint32_t FB_SLOTS = 2;          // FS reader
+    static const uint32_t FB_SLOTS_HS = 8;       // HS reader (pool ceiling)
+    static const uint32_t FB_SLOTS_MAX = 8;      // array sizing
+    static const uint32_t FB_EMA_DIV = 8;        // 1/8 at 62.5 polls/s
+    static const uint32_t FB_EMA_DIV_HS = 32;    // 1/32 at 250 polls/s
     static const uint32_t FB_FRESH_FRAMES = 250;
     static const uint32_t FB_SLEW_MHZ_PER_FRAME = 4;   // ~90 ppm/s at 44.1k
-    sitd_t  *fb_sitd[FB_SLOTS] = {};
-    itd_t   *fb_itd[FB_SLOTS] = {};   // HS reader: same slots, iTD transport
+    sitd_t  *fb_sitd[FB_SLOTS_MAX] = {};
+    itd_t   *fb_itd[FB_SLOTS_MAX] = {};   // HS reader: iTD transport
     uint16_t fb_mps_hs = 0;           // feedback EP wMaxPacketSize (HS arm/refill)
-    uint8_t  fb_buf[FB_SLOTS][8];
+    uint8_t  fb_buf[FB_SLOTS_MAX][8];
     uint8_t  fb_endpoint    = 0;   // 0 = none advertised
     bool     follow_fb      = true;
     uint32_t fb_rate_mhz    = 0;   // last plausible decode (display/debug)

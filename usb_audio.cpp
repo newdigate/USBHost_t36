@@ -596,15 +596,19 @@ bool USBAudioOut::beginStreamingHS(const UAC1AltSetting *alt)
 	// stream, the loop just stays open at nominal + trim. The HS report
 	// is 4 bytes of Q16.16 samples-per-microframe on an iso IN endpoint;
 	// one iTD transaction in microframe 0 of each polled slot reads it.
-	// The witness refreshes every 1 ms (bInterval 4); the 16 ms slot
-	// cadence subsamples that, and the EMA's ~128 ms horizon needs no
-	// more. An MPS of 0 (malformed descriptor) or beyond the read buffer
-	// leaves the loop open rather than arming a read that cannot land.
+	// The witness refreshes every 1 ms (bInterval 4); eight slots 4
+	// frames apart read it at 250/s -- the matched-soak baseline showed
+	// poll rate as the dominant FIFO-envelope effect (916 B unmatched vs
+	// 104-264 B matched), and 8 is the iTD pool's ceiling. The EMA
+	// divisor scales with the rate to hold the ~128 ms horizon; see
+	// FB_SLOTS_HS in the header. An MPS of 0 (malformed descriptor) or
+	// beyond the read buffer leaves the loop open rather than arming a
+	// read that cannot land.
 	if (alt->feedback_endpoint && alt->feedback_max_packet &&
 	    alt->feedback_max_packet <= sizeof(fb_buf[0])) {
 		fb_endpoint = alt->feedback_endpoint & 0x0F;
 		fb_mps_hs = alt->feedback_max_packet;
-		for (uint32_t k = 0; k < FB_SLOTS; k++) {
+		for (uint32_t k = 0; k < FB_SLOTS_HS; k++) {
 			fb_itd[k] = itd_alloc();
 			if (!fb_itd[k] ||
 			    !itd_fill_in(fb_itd[k], device->address, fb_endpoint,
@@ -617,8 +621,9 @@ bool USBAudioOut::beginStreamingHS(const UAC1AltSetting *alt)
 				stopFeedback();
 				break;
 			}
-			// Slots 16 frames apart, like the FS reader.
-			uint16_t frame = (uint16_t)(k * 16);
+			// Slots 4 frames apart: each recurs every 32 ms, together
+			// 250 polls/s.
+			uint16_t frame = (uint16_t)(k * 4);
 			itd_link(periodic_frame_slot(frame), fb_itd[k], frame);
 		}
 	}
@@ -643,7 +648,9 @@ bool USBAudioOut::beginStreamingHS(const UAC1AltSetting *alt)
 // user left, so unlinking one would walk an arbitrary periodic slot.
 void USBAudioOut::stopFeedback()
 {
-	for (uint32_t k = 0; k < FB_SLOTS; k++) {
+	// MAX, not the per-speed counts: this must reclaim whichever reader
+	// armed, and the HS one uses more slots than the FS one.
+	for (uint32_t k = 0; k < FB_SLOTS_MAX; k++) {
 		if (fb_sitd[k]) {
 			sitd_unlink(periodic_frame_slot(fb_sitd[k]->frame), fb_sitd[k]);
 			sitd_free(fb_sitd[k]);
@@ -731,7 +738,7 @@ void USBAudioOut::service()
 		// Collect feedback reports before re-arming audio frames, so a
 		// report that just landed steers the very next microframe sizing
 		// below -- same ordering contract as the FS loop.
-		for (uint32_t k = 0; k < FB_SLOTS; k++) {
+		for (uint32_t k = 0; k < FB_SLOTS_HS; k++) {
 			itd_t *f = fb_itd[k];
 			// fb_endpoint is checked as well as the pointer: the two are
 			// kept in step by stopFeedback(), and if they ever were not,
@@ -757,8 +764,10 @@ void USBAudioOut::service()
 					fb_rate_mhz = mhz;
 					// Average before use: same dither rationale
 					// as FS (raw-chasing measured +4.8 ppm on
-					// this bench).
-					fb_avg_mhz = uac1_fb_average(fb_avg_mhz, mhz);
+					// this bench). The divisor holds the 128 ms
+					// horizon at this reader's 250 polls/s.
+					fb_avg_mhz = uac1_fb_average(fb_avg_mhz, mhz,
+					                             FB_EMA_DIV_HS);
 					fb_frames_since = 0;
 					fb_packets++;
 				} else {
@@ -854,7 +863,7 @@ void USBAudioOut::service()
 				// than the instantaneous report is what nulls the
 				// residual (raw-chasing measured +4.8 ppm on this
 				// bench).
-				fb_avg_mhz = uac1_fb_average(fb_avg_mhz, mhz);
+				fb_avg_mhz = uac1_fb_average(fb_avg_mhz, mhz, FB_EMA_DIV);
 				fb_frames_since = 0;
 				fb_packets++;
 			} else {

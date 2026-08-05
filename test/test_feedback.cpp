@@ -98,15 +98,15 @@ static void test_average(void)
 {
 	// Seeding: the first report becomes the average outright, so the servo
 	// has a sane target immediately rather than slewing up from zero.
-	CHECK_EQ(uac1_fb_average(0, 44095703), 44095703);
+	CHECK_EQ(uac1_fb_average(0, 44095703, 8), 44095703);
 
 	// A device dithers its report between adjacent values to express a rate
 	// between them; the EMA must settle near the duty-weighted mean, which
 	// a rate-limited follower of the raw reports provably cannot do (it
 	// converges to the majority state instead -- measured on this bench as
-	// a +4.8 ppm sizing bias). One step moves 1/8 of the distance.
-	CHECK_EQ(uac1_fb_average(44095703, 44096314), 44095779);   // +611/8=+76
-	CHECK_EQ(uac1_fb_average(44096314, 44095703), 44096238);   // -611/8=-76
+	// a +4.8 ppm sizing bias). One step moves 1/div of the distance.
+	CHECK_EQ(uac1_fb_average(44095703, 44096314, 8), 44095779);   // +611/8=+76
+	CHECK_EQ(uac1_fb_average(44096314, 44095703, 8), 44096238);   // -611/8=-76
 
 	// Under a 50/50 dither between two values the average must settle into
 	// a narrow band around the midpoint -- this is the whole point: the
@@ -114,19 +114,51 @@ static void test_average(void)
 	// Symmetric rounding keeps the equilibrium centred instead of walking.
 	uint32_t a = 44095703;
 	for (int i = 0; i < 40; i++) {
-		a = uac1_fb_average(a, 44096314);
-		a = uac1_fb_average(a, 44095703);
+		a = uac1_fb_average(a, 44096314, 8);
+		a = uac1_fb_average(a, 44095703, 8);
 	}
 	const uint32_t mid = (44096314u + 44095703u) / 2u;
 	CHECK_EQ(a + 80 > mid && a < mid + 80, true);
 
 	// Small deltas still move: 4 mHz rounds to 1, not 0 (no dead zone
 	// wider than the rounding radius).
-	CHECK_EQ(uac1_fb_average(44100000, 44100004), 44100001);
-	CHECK_EQ(uac1_fb_average(44100004, 44100000), 44100003);
+	CHECK_EQ(uac1_fb_average(44100000, 44100004, 8), 44100001);
+	CHECK_EQ(uac1_fb_average(44100004, 44100000, 8), 44100003);
 
 	// Steady input is a fixed point.
-	CHECK_EQ(uac1_fb_average(44095703, 44095703), 44095703);
+	CHECK_EQ(uac1_fb_average(44095703, 44095703, 8), 44095703);
+}
+
+static void test_average_divisor(void)
+{
+	// div sets the time constant (div / poll_rate); the HS reader runs
+	// 1/32 at 250 polls/s so both configurations hold the same ~128 ms
+	// horizon. One step moves 1/32 of the distance.
+	CHECK_EQ(uac1_fb_average(44095703, 44096314, 32), 44095722);  // +611/32=+19
+	CHECK_EQ(uac1_fb_average(44096314, 44095703, 32), 44096295);  // -611/32=-19
+
+	// The dither test at the HS divisor: same midpoint equilibrium, just
+	// reached in smaller steps -- shortening the horizon instead is the
+	// +4.8 ppm bug's road back in.
+	uint32_t a = 44095703;
+	for (int i = 0; i < 160; i++) {
+		a = uac1_fb_average(a, 44096314, 32);
+		a = uac1_fb_average(a, 44095703, 32);
+	}
+	const uint32_t mid = (44096314u + 44095703u) / 2u;
+	CHECK_EQ(a + 80 > mid && a < mid + 80, true);
+
+	// Symmetric rounding at div 32: half of 32 is 16, so 16 mHz rounds
+	// away from zero in both directions.
+	CHECK_EQ(uac1_fb_average(44100000, 44100016, 32), 44100001);
+	CHECK_EQ(uac1_fb_average(44100016, 44100000, 32), 44100015);
+
+	// Seeding and fixed point behave at any divisor.
+	CHECK_EQ(uac1_fb_average(0, 44095703, 32), 44095703);
+	CHECK_EQ(uac1_fb_average(44095703, 44095703, 32), 44095703);
+
+	// div 0 clamps to adopt-each-sample rather than dividing by zero.
+	CHECK_EQ(uac1_fb_average(44095703, 44096314, 0), 44096314);
 }
 
 static void test_decode_hs(void)
@@ -170,6 +202,7 @@ int main(void)
 	test_validity();
 	test_slew();
 	test_average();
+	test_average_divisor();
 	test_decode_hs();
 	if (failures == 0) {
 		printf("test_feedback: all %d checks passed\n", checks);

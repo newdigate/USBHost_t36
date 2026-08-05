@@ -55,9 +55,34 @@ bool USBAudioOut::claim(Device_t *dev, int type, const uint8_t *descriptors, uin
 	                  : uac1_find_alt(&topo, req_rate, req_channels, req_bits);
 	if (alt < 0) return false;
 
+	// Input, if the sketch asked for it. Failing to find a matching input
+	// alt is NOT a failure to claim: the output path is what this driver
+	// has always been for, and a device that cannot capture the requested
+	// format should still play. readyIn() stays false and the counters say
+	// why.
+	pending_in_alt = -1;
+	if (req_in_channels) {
+		int ialt = is_uac2
+		         ? uac2_find_in_alt(&topo, req_in_channels, req_in_bits)
+		         : uac1_find_in_alt(&topo, req_in_rate, req_in_channels, req_in_bits);
+		// One clock cannot be at two rates. When both directions resolve to
+		// the same clock entity -- which is what the MC200 does, and what
+		// makes duplex tractable at all -- asking for different rates is a
+		// contradiction, and the second SET_CUR would silently retune the
+		// stream that is already running. Refuse the input rather than
+		// discover it as a pitch shift.
+		if (ialt >= 0 && is_uac2 && topo.in_clock_source_id
+		    && topo.in_clock_source_id == topo.clock_source_id
+		    && req_in_rate != req_rate) {
+			ialt = -1;
+		}
+		pending_in_alt = ialt;
+	}
+
 	// Do not assign `device` here -- claim_drivers() sets it after we
 	// return true.
 	active_alt = -1;         // becomes valid once configuration completes
+	active_in_alt = -1;
 
 	ctrl_attempts = 0;
 	return startConfigure(dev, alt);
@@ -100,6 +125,52 @@ bool USBAudioOut::startConfigure(Device_t *dev, int alt)
 	return true;
 }
 
+// Issue the first request of the INPUT half of the configuration sequence,
+// once the output half has completed. Returns false when there is nothing to
+// do (no input wanted, or no matching alt), which is the caller's cue to
+// finish the sequence.
+bool USBAudioOut::startConfigureIn()
+{
+	if (pending_in_alt < 0 || !device) return false;
+	if (topo.input_streaming_interface == 0xFF) return false;
+
+	ctrl_started_ms = millis();
+
+	// UAC2: the input rate lives on the input terminal's clock entity, and
+	// on a device that shares one clock between directions it is ALREADY at
+	// the requested rate -- the output half set it, and claim() refused the
+	// alt if the two rates disagreed. Writing it again would be a redundant
+	// request against a running stream, so the shared case skips straight
+	// to SET_INTERFACE. A device with a separate input clock gets its own
+	// CUR write; an unresolved clock (0) gets none, because the alternative
+	// is guessing which entity to retune.
+	if (is_uac2) {
+		uint8_t cid = topo.in_clock_source_id;
+		if (cid && cid != topo.clock_source_id) {
+			uint32_t r = req_in_rate;
+			rate4_in_buf[0] = (uint8_t)r;         rate4_in_buf[1] = (uint8_t)(r >> 8);
+			rate4_in_buf[2] = (uint8_t)(r >> 16); rate4_in_buf[3] = (uint8_t)(r >> 24);
+			uac2_clock_cur_setup((uint8_t *)&setup, topo.control_interface, cid);
+			ctrl_state = CTRL_SET_IN_CLOCK;
+			if (!queue_Control_Transfer(device, &setup, rate4_in_buf, this)) {
+				ctrl_state = CTRL_IDLE;
+				pending_in_alt = -1;   // input is not coming; do not wait for it
+				return false;
+			}
+			return true;
+		}
+	}
+
+	ctrl_state = CTRL_SET_IN_INTERFACE;
+	if (!USBHost::setInterface(device, setup, topo.input_streaming_interface,
+	                           (uint8_t)pending_in_alt, this)) {
+		ctrl_state = CTRL_IDLE;
+		pending_in_alt = -1;
+		return false;
+	}
+	return true;
+}
+
 // The watchdog itself, polled from service(). Each step of the sequence gets
 // its own deadline; expiry means the completion is never coming, because the
 // only path back to a driver is a clean completion.
@@ -110,6 +181,23 @@ void USBAudioOut::serviceControl()
 	                                         CTRL_TIMEOUT_MS, ctrl_attempts,
 	                                         CTRL_MAX_ATTEMPTS);
 	if (action == UAC_CTRL_WAIT) return;
+
+	// An input step that stalls must not cost the output configuration.
+	// Restarting from the top calls startConfigure(), which clears
+	// active_alt -- correct when the OUTPUT half is what stalled and the
+	// device's state is unknown, and destructive here, where the output
+	// interface is already selected and possibly streaming. Abandon input
+	// instead: the counter still climbs, readyIn() stays false, and
+	// playback is untouched.
+	bool input_step = (ctrl_state == CTRL_SET_IN_CLOCK
+	                   || ctrl_state == CTRL_SET_IN_INTERFACE
+	                   || ctrl_state == CTRL_SET_IN_RATE);
+	if (input_step) {
+		ctrl_timeouts++;
+		ctrl_state = CTRL_IDLE;
+		pending_in_alt = -1;
+		return;
+	}
 
 	ctrl_timeouts++;
 	ctrl_state = CTRL_IDLE;
@@ -131,6 +219,16 @@ const UAC1AltSetting *USBAudioOut::findAlt(int alt_number) const
 	return 0;
 }
 
+const UAC1AltSetting *USBAudioOut::findInAlt(int alt_number) const
+{
+	if (alt_number < 0) return 0;
+	for (uint8_t i = 0; i < topo.in_alt_count; i++) {
+		if (topo.in_alts[i].alternate_setting == (uint8_t)alt_number)
+			return &topo.in_alts[i];
+	}
+	return 0;
+}
+
 // Class-specific SET_CUR of SAMPLING_FREQ_CONTROL on the streaming endpoint
 // (UAC1 5.2.3.2). The rate is three bytes little-endian, not four.
 //
@@ -138,14 +236,18 @@ const UAC1AltSetting *USBAudioOut::findAlt(int alt_number) const
 // 0B0E:2301 offers five in one alt -- leaves the device at whatever rate it
 // last had. Without this the stream plays at the wrong speed rather than
 // failing, which is much harder to notice.
-bool USBAudioOut::requestSampleRate(const UAC1AltSetting *alt)
+// `buf3` is the caller's DMA-reachable payload storage; the two directions
+// pass different buffers so a watchdog reissue can never have two transfers
+// pointing at one.
+bool USBAudioOut::requestSampleRateOn(const UAC1AltSetting *alt, uint32_t rate,
+                                      uint8_t *buf3)
 {
-	if (!alt || !device) return false;
-	rate_buf[0] = (uint8_t)(req_rate & 0xFF);
-	rate_buf[1] = (uint8_t)((req_rate >> 8) & 0xFF);
-	rate_buf[2] = (uint8_t)((req_rate >> 16) & 0xFF);
+	if (!alt || !device || !buf3) return false;
+	buf3[0] = (uint8_t)(rate & 0xFF);
+	buf3[1] = (uint8_t)((rate >> 8) & 0xFF);
+	buf3[2] = (uint8_t)((rate >> 16) & 0xFF);
 	mk_setup(setup, 0x22, 0x01, 0x0100, alt->endpoint_address, 3);
-	return queue_Control_Transfer(device, &setup, rate_buf, this);
+	return queue_Control_Transfer(device, &setup, buf3, this);
 }
 
 void USBAudioOut::control(const Transfer_t *transfer)
@@ -174,29 +276,74 @@ void USBAudioOut::control(const Transfer_t *transfer)
 		// UAC2 alts carry ep_controls==0 from memset -- but an explicit
 		// guard keeps a future UAC2 bmControls parser from silently
 		// reintroducing a bogus request.
-		if (!is_uac2 && uac1_alt_needs_rate_request(alt) && requestSampleRate(alt)) {
+		if (!is_uac2 && uac1_alt_needs_rate_request(alt)
+		    && requestSampleRateOn(alt, req_rate, rate_buf)) {
 			ctrl_state = CTRL_SET_RATE;
 			ctrl_started_ms = millis();
 			return;      // active_alt stays invalid until the rate lands
 		}
 	}
 
-	// Either the device needed no rate request, or the rate request just
-	// completed. Nothing else issues control transfers on this driver.
-	ctrl_state = CTRL_IDLE;
+	// --- input half ---
+	if (ctrl_state == CTRL_SET_IN_CLOCK) {
+		ctrl_state = CTRL_SET_IN_INTERFACE;
+		ctrl_started_ms = millis();
+		if (!USBHost::setInterface(device, setup, topo.input_streaming_interface,
+		                           (uint8_t)pending_in_alt, this)) {
+			ctrl_state = CTRL_IDLE;
+			pending_in_alt = -1;
+		}
+		return;
+	}
+
+	if (ctrl_state == CTRL_SET_IN_INTERFACE) {
+		const UAC1AltSetting *ialt = findInAlt(pending_in_alt);
+		if (!is_uac2 && uac1_alt_needs_rate_request(ialt)
+		    && requestSampleRateOn(ialt, req_in_rate, rate_in_buf)) {
+			ctrl_state = CTRL_SET_IN_RATE;
+			ctrl_started_ms = millis();
+			return;
+		}
+		ctrl_state = CTRL_IDLE;
+		active_in_alt = pending_in_alt;
+		return;
+	}
+
+	if (ctrl_state == CTRL_SET_IN_RATE) {
+		ctrl_state = CTRL_IDLE;
+		active_in_alt = pending_in_alt;
+		return;
+	}
+
+	// The output half is done. active_alt goes valid here and not before --
+	// ready() has always meant "the device is really at req_rate".
 	active_alt = pending_alt;
+
+	// Now the input half, if one was asked for and found. It continues the
+	// same sequence rather than running alongside it: one control endpoint,
+	// one `setup`. When there is nothing to configure the sequence simply
+	// ends, which is every pre-input sketch's path through here.
+	if (startConfigureIn()) return;
+
+	ctrl_state = CTRL_IDLE;
 }
 
 void USBAudioOut::disconnect()
 {
 	active_alt = -1;
 	pending_alt = -1;
+	active_in_alt = -1;
+	pending_in_alt = -1;
 	is_uac2 = false;
 	ctrl_state = CTRL_IDLE;
 	// The retry budget belongs to the device that just left; the next one
 	// starts with a full allowance.
 	ctrl_attempts = 0;
 	err_xact = err_babble = err_buffer = short_sends = 0;
+	// Capture descriptors stay linked for the same self-heal reason the OUT
+	// ring's do; service() pauses while `device` is null and the next
+	// beginRecording() decides whether the re-claimed device still fits
+	// what is armed.
 	// Feedback state is deliberately NOT cleared here: like the OUT ring,
 	// the feedback descriptors stay linked across a detach and self-heal
 	// on re-attach (beginStreaming early-returns while is_streaming, and
@@ -624,6 +771,48 @@ bool USBAudioOut::beginStreamingHS(const UAC1AltSetting *alt)
 	return true;
 }
 
+// Unpack one microframe's (or frame's) worth of device samples into the
+// capture FIFO. `bytes` is what the controller reported actually arriving,
+// which is the only reason this is separate from a fixed-size copy: at
+// 44.1 kHz the device sends five audio frames in some microframes and six in
+// others, and a host that assumed a constant size would resample the stream
+// by accident.
+//
+// Returns audio frames consumed. A FIFO that cannot take them all drops the
+// remainder and counts it -- there is nowhere to put them and blocking here
+// would stall the harvest into the next slot's deadline.
+uint32_t USBAudioOut::drainInFrames(const uint8_t *src, uint32_t bytes)
+{
+	const uint32_t frame_bytes = (uint32_t)ch_total_in * subslot_in;
+	if (frame_bytes == 0) return 0;
+	uint32_t frames = bytes / frame_bytes;
+	if (frames == 0) return 0;
+
+	// Staged in chunks so one oversized microframe cannot outrun the
+	// buffer: 8 frames x 8 channels is more than any geometry this driver
+	// accepts can deliver in 125 us.
+	int16_t staged[8 * 8];
+	const uint32_t max_frames = (sizeof(staged) / sizeof(staged[0])) / capture_ch;
+	uint32_t done = 0;
+	while (done < frames) {
+		uint32_t n = frames - done;
+		if (n > max_frames) n = max_frames;
+		uint32_t got = uac_unpack16(staged, src + (size_t)done * frame_bytes,
+		                            n, capture_ch, ch_total_in, subslot_in);
+		if (got == 0) break;
+		uint32_t took = usb_audio_fifo_write(&in_fifo, staged, got);
+		if (took < got) {
+			// Consumer is behind. Count the SAMPLES lost, not the calls:
+			// how much audio went missing is what a recording cares about.
+			in_overruns += got - took;
+			done += n;
+			break;
+		}
+		done += n;
+	}
+	return done;
+}
+
 // Unlink, free and forget every feedback descriptor, whichever transport
 // armed them, and put the pipe back to "none advertised".
 //
@@ -654,6 +843,215 @@ void USBAudioOut::stopFeedback()
 	}
 	fb_endpoint = 0;
 	fb_mps_hs = 0;
+}
+
+// Arm an IN descriptor in every periodic slot. Structurally the mirror of
+// beginStreaming(): same self-heal check, same wire-order priming margin,
+// same 32 ms per-slot deadline. What differs is that nothing here paces the
+// device -- an isochronous IN endpoint free-runs, so every slot is armed with
+// room for the format's worst-case packet and the controller reports how much
+// of it the device actually used.
+bool USBAudioOut::beginRecording()
+{
+	if (is_recording) {
+		// Detached, or a re-claim still working through its control
+		// sequence: coast, exactly as beginStreaming() does.
+		if (active_in_alt < 0 || !device) return true;
+		UACStreamConfig want;
+		uac_stream_config(&want, is_uac2, findInAlt(active_in_alt));
+		if (uac_stream_config_equal(&armed_in, &want)) return true;
+		stopRecording();
+	}
+	if (active_in_alt < 0 || !device) return false;
+
+	const UAC1AltSetting *alt = findInAlt(active_in_alt);
+	if (!alt || alt->endpoint_address == 0) return false;
+
+	ch_total_in = alt->channels;
+	subslot_in  = alt->subframe_size;
+	if (ch_total_in == 0 || ch_total_in > 8) return false;
+	if (subslot_in < 2 || subslot_in > 4) return false;
+	capture_ch = (req_capture_ch <= ch_total_in) ? req_capture_ch : ch_total_in;
+	in_endpoint = alt->endpoint_address & 0x0F;
+
+	// Room per transaction, from the NEGOTIATED format rather than the
+	// advertised ceiling -- the MC200 advertises 800, sized for 192 kHz,
+	// and sends at most 192 at 44.1 kHz. The +1 covers the fractional rates:
+	// 44.1 kHz is 5.5125 frames per microframe, so some carry 6.
+	const uint32_t per = (uint32_t)ch_total_in * subslot_in;
+	uint32_t worst = is_uac2 ? (req_in_rate / 8000u + 1u) * per
+	                         : (req_in_rate / 1000u + 1u) * per;
+	uint32_t ceiling = is_uac2 ? MAX_UFRAME_BYTES : MAX_FRAME_BYTES;
+	if (worst == 0 || worst > ceiling) return false;
+	// A device advertising less than its own format needs is a descriptor
+	// error, and arming for the smaller value would report the shortfall as
+	// babble -- blaming the wire for a contradiction in the descriptors.
+	if (alt->max_packet_size && alt->max_packet_size < worst) return false;
+	in_stride = (uint16_t)worst;
+
+	usb_audio_fifo_reset(&in_fifo);
+	packets_recv = in_overruns = in_empty_uframes = in_bytes = 0;
+	in_err_xact = in_err_babble = in_err_buffer = 0;
+
+	// Prime in WIRE order from two frames ahead, leaving the two slots the
+	// controller reaches FIRST disarmed on their opening pass. Those two
+	// would otherwise be filled by the device before the harvest position
+	// reaches them, and their samples would enter the FIFO a whole
+	// revolution late -- 32 ms of audio spliced out of sequence. Disarmed,
+	// they carry nothing on revolution one; the harvest re-arms them within
+	// microseconds of starting, a full revolution before their frames come
+	// up again.
+	uint32_t start = periodic_current_frame() + 2;
+	for (uint32_t k = 0; k < RING_SLOTS; k++) {
+		uint32_t i = (start + k) % RING_SLOTS;
+		bool inert = (k >= RING_SLOTS - 2);
+		in_armed[i] = !inert;
+		if (is_uac2) {
+			in_ring_hs[i] = itd_alloc();
+			if (!in_ring_hs[i]) { stopRecording(); return false; }
+			if (inert) {
+				itd_disarm(in_ring_hs[i]);
+			} else if (!itd_fill_in_frame(in_ring_hs[i], device->address,
+			                              in_endpoint, in_buf_hs[i],
+			                              in_stride, in_stride, false)) {
+				stopRecording(); return false;
+			}
+			itd_link(periodic_frame_slot(i), in_ring_hs[i], (uint16_t)i);
+		} else {
+			in_ring[i] = sitd_alloc();
+			if (!in_ring[i]) { stopRecording(); return false; }
+			if (inert) {
+				sitd_disarm(in_ring[i]);
+			} else if (!sitd_fill_in(in_ring[i], device->address, in_endpoint,
+			                         0, 0, in_buf[i], in_stride, 0, false)) {
+				stopRecording(); return false;
+			}
+			sitd_link(periodic_frame_slot(i), in_ring[i], (uint16_t)i);
+		}
+	}
+	in_ring_next = start % RING_SLOTS;
+
+	uac_stream_config(&armed_in, is_uac2, alt);
+	is_recording = true;
+	return true;
+}
+
+void USBAudioOut::stopRecording()
+{
+	for (uint32_t i = 0; i < RING_SLOTS; i++) {
+		if (in_ring[i]) {
+			sitd_unlink(periodic_frame_slot(i), in_ring[i]);
+			sitd_free(in_ring[i]);
+			in_ring[i] = 0;
+		}
+		if (in_ring_hs[i]) {
+			itd_unlink(periodic_frame_slot(i), in_ring_hs[i]);
+			itd_free(in_ring_hs[i]);
+			in_ring_hs[i] = 0;
+		}
+	}
+	memset(&armed_in, 0, sizeof(armed_in));
+	memset(in_armed, 0, sizeof(in_armed));
+	is_recording = false;
+	in_endpoint = 0;
+}
+
+uint32_t USBAudioOut::read(int16_t *samples, uint32_t count)
+{
+	if (!samples) return 0;
+	// The FIFO's read is all-or-nothing by design (a partial USB frame
+	// would shift every later sample on the OUT path). A recorder has no
+	// such constraint and asking for more than has arrived is the normal
+	// case, so take what is there.
+	uint32_t have = usb_audio_fifo_used(&in_fifo);
+	if (count > have) count = have;
+	if (count == 0) return 0;
+	return usb_audio_fifo_read(&in_fifo, samples, count) ? count : 0;
+}
+
+uint32_t USBAudioOut::recorded() const
+{
+	return usb_audio_fifo_used(&in_fifo);
+}
+
+// Harvest the capture ring, in wire order from in_ring_next, stopping at the
+// first slot the controller has not finished. Same discipline as the HS OUT
+// ring's harvest and for a sharper reason: out of order here means samples
+// enter the FIFO out of order, which is a recording that is wrong rather than
+// a stream that is late.
+void USBAudioOut::serviceRecording()
+{
+	const uint32_t frame_bytes = (uint32_t)ch_total_in * subslot_in;
+	uint32_t serviced = 0;
+	while (serviced < RING_SLOTS) {
+		uint32_t i = (in_ring_next + serviced) % RING_SLOTS;
+
+		if (is_uac2) {
+			itd_t *n = in_ring_hs[i];
+			if (!n) break;
+
+			bool done = true;
+			for (unsigned k = 0; k < 8 && done; k++) {
+				itd_txn_status_t st;
+				itd_get_txn_status(n, k, &st);
+				if (st.active) done = false;
+			}
+			if (!done) break;            // hardware has not run it yet
+
+			// in_armed false is a priming-margin slot on its opening pass:
+			// nothing was read into it, and everything below would be
+			// reading uninitialised buffer.
+			for (unsigned k = 0; k < 8 && in_armed[i]; k++) {
+				itd_txn_status_t st;
+				itd_get_txn_status(n, k, &st);
+				if (st.err_xact)   in_err_xact++;
+				if (st.err_babble) in_err_babble++;
+				if (st.err_buffer) in_err_buffer++;
+				// The controller writes the RECEIVED count back into the
+				// length field of a completed IN (EHCI 1.0 Table 3-3), so
+				// this is the device's own answer to how much it sent.
+				if (st.length == 0) { in_empty_uframes++; continue; }
+				uint32_t got = st.length;
+				if (got > in_stride) got = in_stride;   // babble; take what fits
+				in_bytes += drainInFrames(in_buf_hs[i] + (size_t)k * in_stride,
+				                          got) * frame_bytes;
+			}
+			if (itd_fill_in_frame(n, device->address, in_endpoint,
+			                      in_buf_hs[i], in_stride, in_stride, false)) {
+				in_armed[i] = true;
+				packets_recv++;
+			}
+		} else {
+			sitd_t *s = in_ring[i];
+			if (!s) break;
+
+			sitd_status_t st;
+			sitd_get_status(s, &st);
+			if (st.active) break;
+
+			if (in_armed[i]) {
+				if (st.err_transaction) in_err_xact++;
+				if (st.err_babble)      in_err_babble++;
+				if (st.err_buffer)      in_err_buffer++;
+				// bytes_left is what the controller did NOT fill, so the
+				// received count is the room minus the remainder. It is
+				// read from the same total-bytes field a never-armed slot
+				// leaves at zero, which is precisely why in_armed exists
+				// and why this is not inferable from the descriptor.
+				uint32_t got = (st.bytes_left <= in_stride)
+				             ? (uint32_t)(in_stride - st.bytes_left) : 0;
+				if (got == 0) in_empty_uframes++;
+				else in_bytes += drainInFrames(in_buf[i], got) * frame_bytes;
+			}
+			if (sitd_fill_in(s, device->address, in_endpoint, 0, 0,
+			                 in_buf[i], in_stride, 0, false)) {
+				in_armed[i] = true;
+				packets_recv++;
+			}
+		}
+		serviced++;
+	}
+	in_ring_next = (in_ring_next + serviced) % RING_SLOTS;
 }
 
 void USBAudioOut::stopStreaming()
@@ -693,14 +1091,15 @@ void USBAudioOut::service()
 	// the case the watchdog exists for.
 	serviceControl();
 
-	if (!is_streaming) return;
-
 	// The framework nulls `device` after disconnect() while the self-heal
-	// contract deliberately keeps descriptors linked and is_streaming set.
-	// Harvesting while absent would re-arm reads through the null device
+	// contract deliberately keeps descriptors linked and the stream flags
+	// set. Harvesting while absent would re-arm through the null device
 	// pointer (non-faulting on RT1176 only because address 0 is ITCM);
-	// pause instead -- descriptors sit retired until re-claim restores
-	// the device and its address flows into the next refill.
+	// pause instead -- descriptors sit retired until re-claim restores the
+	// device and its address flows into the next refill.
+	if (device && is_recording && active_in_alt >= 0) serviceRecording();
+
+	if (!is_streaming) return;
 	if (!device) return;
 
 	// Never stream to a device whose alternate setting is not selected.

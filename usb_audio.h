@@ -10,6 +10,15 @@
 #include "ehci_iso.h"
 #include "usb_audio_fifo.h"
 
+// One driver, both directions. The name says OUT because that is all it did
+// for its first eight months, and renaming it would churn every example and
+// gate for no behavioural gain -- but the input path below lives here rather
+// than in a USBAudioIn beside it, and that is a decision rather than an
+// accident. claim(type=0) takes the WHOLE device, so a second driver would
+// simply never be offered one this driver had already claimed; the framework
+// gives no way for two drivers to share a device. A duplex device is one
+// device, its two directions share a control sequence and (on every device
+// seen so far) a converter clock, so they share a driver.
 class USBAudioOut : public USBDriver {
 public:
     USBAudioOut(USBHost &host) { init(); }
@@ -21,7 +30,41 @@ public:
         req_rate = rate; req_channels = channels; req_bits = bits;
     }
 
+    // --- input (capture) ---
+    //
+    // Requesting an input format is what turns the input path on at all:
+    // req_in_channels stays 0 until this is called, and every input step --
+    // the alt search in claim(), the extra control requests, the IN ring --
+    // is gated on it. So a sketch that never calls formatIn() runs exactly
+    // the code it ran before input existed.
+    //
+    // `channels` and `bits` must match an alternate setting the device
+    // advertises on its INPUT interface exactly. Duplex does not imply
+    // symmetric and the two bench devices both prove it: the MC200 plays
+    // 8ch/16 or 8ch/24 and captures 8ch/24 only; the dongle plays 2ch/16 and
+    // captures 1ch/16. Asking for the output format on the input interface
+    // is the mistake this refuses rather than approximates.
+    void formatIn(uint32_t rate, uint8_t channels, uint8_t bits) {
+        req_in_rate = rate; req_in_channels = channels; req_in_bits = bits;
+    }
+
+    // How many of the device's channels reach the FIFO, taken from the
+    // start of each frame. The MC200 sends eight; storing all of them at
+    // 44.1 kHz fills the 4096-sample FIFO in 11.6 ms, which is inside the
+    // ring's own 32 ms revolution -- so the default of two is not a
+    // simplification, it is what keeps the consumer's deadline longer than
+    // the producer's. Clamped to the device's channel count at
+    // beginRecording().
+    void captureChannels(uint8_t n) { req_capture_ch = n ? n : 1; }
+    uint8_t captureChannels() const { return capture_ch; }
+
     bool ready() const { return active_alt >= 0; }
+
+    // Input configured and ready to record. Separate from ready() because
+    // the input interface is selected by control requests that run AFTER
+    // the output ones complete -- so there is a window where ready() is
+    // true and this is not.
+    bool readyIn() const { return active_in_alt >= 0; }
 
     // Task 4 milestone: post ONE isochronous OUT packet of `len` bytes and
     // let the controller run it. Not streaming -- this exists to prove the
@@ -78,6 +121,43 @@ public:
     // not at whatever it defaults to -- see AudioOutputUSBHost.
     uint32_t rate() const { return req_rate; }
     uint8_t  channels() const { return req_channels; }
+
+    // --- capture stream ---
+    //
+    // beginRecording() arms an IN descriptor in every periodic slot and the
+    // device starts filling them; service() harvests. Nothing paces this:
+    // an isochronous IN endpoint is a device free-running its own converter
+    // (the MC200's declares bmAttributes 0x05, asynchronous), so the host's
+    // only job is to consume what arrives before the ring comes round again.
+    // A slot not harvested within its 32 ms revolution is overwritten, which
+    // shows up as packetsReceived() climbing more slowly than 1000/s.
+    bool beginRecording();
+    void stopRecording();
+    bool recording() const { return is_recording; }
+
+    // Pop up to `count` interleaved int16 samples, captureChannels() wide.
+    // Returns how many were taken; fewer than asked means the FIFO ran dry.
+    uint32_t read(int16_t *samples, uint32_t count);
+    uint32_t recorded() const;           // samples waiting, in int16
+
+    // Frames the controller has actually collected -- 1000/s at high speed,
+    // one per iTD, each carrying up to eight microframe transactions.
+    uint32_t packetsReceived() const { return packets_recv; }
+    // Device samples that arrived and were thrown away because the FIFO was
+    // full. This is the consumer being too slow, not a transport fault, and
+    // it is counted separately for exactly that reason: an overrun blames
+    // the sketch, a transport error blames the wire.
+    uint32_t inOverruns() const { return in_overruns; }
+    uint32_t inTransportErrors() const { return in_err_xact + in_err_babble + in_err_buffer; }
+    // Microframes that completed carrying nothing. Not an error on its own
+    // -- at 44.1 kHz the device legitimately sends 5 frames in some
+    // microframes and 6 in others, never zero -- but a count that tracks
+    // packetsReceived() * 8 means the endpoint is producing silence, which
+    // looks identical to working audio in every other counter here.
+    uint32_t inEmptyMicroframes() const { return in_empty_uframes; }
+    uint32_t inBytes() const { return in_bytes; }     // payload received, total
+    uint32_t rateIn() const { return req_in_rate; }
+    int inAlternateSetting() const { return active_in_alt; }
 
     // --- rate trim ---
     //
@@ -243,12 +323,27 @@ private:
     int      active_alt   = -1;
     int      pending_alt  = -1;
 
+    // Input request. req_in_channels == 0 means "no input wanted" and is
+    // the master switch for every input code path.
+    uint32_t req_in_rate     = 0;
+    uint8_t  req_in_channels = 0;
+    uint8_t  req_in_bits     = 0;
+    uint8_t  req_capture_ch  = 2;
+    int      active_in_alt   = -1;
+    int      pending_in_alt  = -1;
+
     // Two-step configuration: SET_INTERFACE always, then SET_CUR
     // SAMPLING_FREQ on devices whose alternate setting does not by itself
     // determine the rate. active_alt only becomes valid once the last step
     // completes, so ready() stays false until the device is really at
     // req_rate.
-    enum CtrlState { CTRL_IDLE, CTRL_SET_CLOCK, CTRL_SET_INTERFACE, CTRL_SET_RATE };
+    //
+    // The three IN_ states run the same two steps against the input
+    // interface, and only after the output ones have finished: they are a
+    // continuation of the same sequence rather than a parallel one, because
+    // the device has one control endpoint and this driver has one `setup`.
+    enum CtrlState { CTRL_IDLE, CTRL_SET_CLOCK, CTRL_SET_INTERFACE, CTRL_SET_RATE,
+                     CTRL_SET_IN_CLOCK, CTRL_SET_IN_INTERFACE, CTRL_SET_IN_RATE };
     CtrlState ctrl_state = CTRL_IDLE;
 
     // Watchdog for the sequence above. A driver is only ever told about a
@@ -270,6 +365,12 @@ private:
     uint8_t  rate_buf[3];   // SET_CUR payload, 24-bit LE rate; needs DMA reach
     bool     is_uac2 = false;
     uint8_t  rate4_buf[4];   // UAC2 clock CUR payload; needs DMA reach like rate_buf
+    // Separate payload buffers for the input requests. The output request
+    // has always completed before the input one is issued, so one buffer
+    // would serve -- but the watchdog can reissue, and a retry racing a
+    // late completion would have two transfers pointing at one buffer.
+    uint8_t  rate_in_buf[3];
+    uint8_t  rate4_in_buf[4];
 
     setup_t  setup;   // must outlive the control transfer
     // queue_Control_Transfer() takes two Transfer_t for a setup-only request
@@ -311,11 +412,59 @@ private:
     uint8_t  subslot_out  = 0;    // bytes per device sample
     uint16_t alt_mps_hs   = 0;    // min(advertised MPS, MAX_UFRAME_BYTES)
 
+    // Capture ring, the mirror image of the two above: one descriptor per
+    // periodic slot, so a slot is revisited every 32 ms and that is the
+    // whole margin service() has to consume it before the device overwrites
+    // it. FS uses one siTD per frame, HS one iTD carrying eight microframe
+    // transactions of in_stride bytes each.
+    //
+    // Descriptor budget, and why Stage B needs no pool growth: an IN ring is
+    // 32 more descriptors, and ITD_POOL_SIZE 64 is already spent exactly --
+    // 32 OUT ring + 32 feedback at 1000 polls/s. Input-only leaves both of
+    // those unarmed, so the 32 are there. Running BOTH directions at once
+    // needs the pool grown to 96, which is Stage C's problem and is written
+    // down in the design spec rather than pre-empted here.
+    sitd_t  *in_ring[RING_SLOTS] = {};
+    uint8_t  in_buf[RING_SLOTS][MAX_FRAME_BYTES];
+    itd_t   *in_ring_hs[RING_SLOTS] = {};
+    uint8_t  in_buf_hs[RING_SLOTS][8 * MAX_UFRAME_BYTES];
+    uint16_t in_stride    = 0;    // bytes of room per microframe (HS) / frame (FS)
+    uint8_t  ch_total_in  = 0;    // device channels on the active input alt
+    uint8_t  subslot_in   = 0;    // bytes per device sample
+    uint8_t  capture_ch   = 0;    // channels actually unpacked into in_fifo
+    uint8_t  in_endpoint  = 0;
+    // Wire order, and required for the same reason the HS OUT ring needs it
+    // -- more so, because here it is the SAMPLES that would come out
+    // rotated. The controller starts wherever its frame pointer happens to
+    // be, so slots complete in that rotated order; harvesting by index would
+    // splice a revolution of audio out of sequence into the FIFO. The two
+    // slots the controller reaches BEFORE the first harvest position are
+    // linked disarmed, exactly as the OUT ring's priming margin does, so
+    // their first pass carries nothing rather than carrying samples that
+    // would be read last.
+    uint32_t in_ring_next = 0;
+    // Which slots hold a live read. False for the two priming-margin slots
+    // on their opening pass, and the harvest must know: an siTD's status
+    // word carries the bytes REMAINING, which a completed full read and a
+    // never-armed slot both leave at zero. Without this the margin slots
+    // would drain a stride of uninitialised buffer into the recording on
+    // the first pass, indistinguishable from audio.
+    bool     in_armed[RING_SLOTS] = {};
+    bool     is_recording = false;
+    uint32_t packets_recv     = 0;
+    uint32_t in_overruns      = 0;
+    uint32_t in_empty_uframes = 0;
+    uint32_t in_bytes         = 0;
+    uint32_t in_err_xact      = 0;
+    uint32_t in_err_babble    = 0;
+    uint32_t in_err_buffer    = 0;
+
     // What the currently linked descriptors were built for. Compared against
     // the live device on every beginStreaming() so a re-claim that needs a
     // different transport, alt or geometry rebuilds instead of silently
     // running the previous device's ring; all-zero while nothing is armed.
     UACStreamConfig armed = {};
+    UACStreamConfig armed_in = {};
 
     // HS RING ONLY. The ring position expected to complete next, in wire
     // order: the controller walks the periodic list from wherever it happens
@@ -389,13 +538,17 @@ private:
     uint32_t fb_errors      = 0;
 
     const UAC1AltSetting *findAlt(int alt_number) const;
-    bool requestSampleRate(const UAC1AltSetting *alt);
+    const UAC1AltSetting *findInAlt(int alt_number) const;
+    bool requestSampleRateOn(const UAC1AltSetting *alt, uint32_t rate, uint8_t *buf3);
     void fillFrame(uint8_t *dst, uint16_t bytes);
     void fillFrameHS(uint32_t slot);
     bool beginStreamingHS(const UAC1AltSetting *alt);
     void stopFeedback();
     bool startConfigure(Device_t *dev, int alt);
+    bool startConfigureIn();
     void serviceControl();
+    void serviceRecording();
+    uint32_t drainInFrames(const uint8_t *src, uint32_t bytes);
     void topUpFromTone();
 
     // Descriptor capture for lastConfig(). 768 covers every UAC1/UAC2
@@ -406,6 +559,7 @@ private:
     bool     cfg_dump_truncated = false;
 
     usb_audio_fifo_t fifo;
+    usb_audio_fifo_t in_fifo;
     void (*frame_cb)(void) = 0;
 };
 

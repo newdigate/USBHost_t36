@@ -86,6 +86,16 @@ struct UAC1Topology {
 	// UAC2 only: the RESOLVED Clock Source entity (single-input selectors
 	// followed through); 0 for UAC1 or when unresolved.
 	uint8_t  clock_source_id;
+	// The same, resolved from the INPUT interface's terminal. Recorded
+	// separately rather than assumed equal: the MC200 does drive both
+	// directions from one clock (entity 41, measured from its descriptors),
+	// which is what makes a duplex device's two streams share a rate -- but
+	// that is a property of that device, not of the class, and a driver that
+	// assumed it would set the wrong entity's rate on a device with two.
+	// 0 for UAC1, when there is no input interface, or when the chain does
+	// not resolve; unlike the output clock, failing to resolve this does not
+	// fail the parse, because input is parsed opportunistically.
+	uint8_t  in_clock_source_id;
 	uint8_t  alt_count;
 	// alts[] holds up to UAC1_MAX_ALTS entries. A device advertising more
 	// alternate settings (or more feature units, tracked internally during
@@ -93,6 +103,27 @@ struct UAC1Topology {
 	// cannot be distinguished from "exactly 16" by the caller.
 	UAC1AltSetting alts[UAC1_MAX_ALTS];
 };
+
+// Which interface carries audio in each direction. Shared by both class
+// versions -- the fields read (bInterfaceNumber, bInterfaceClass/SubClass,
+// bEndpointAddress, bmAttributes) sit at the same offsets in the UAC1 9-byte
+// audio endpoint descriptor and the UAC2 7-byte standard one, so one
+// implementation serves both. They were duplicated verbatim between the two
+// parsers until the input rule arrived; a subtle rule copied into two files
+// is a rule that gets fixed in one of them.
+//
+// Output: the first AS interface with an isochronous OUT endpoint.
+// Input: the first with an isochronous IN endpoint and NO isochronous OUT.
+// Both return 0xFF for "none".
+//
+// The input rule's absence test is the load-bearing half. An asynchronous
+// OUT interface also carries an IN endpoint -- its feedback endpoint -- and
+// on the XMOS UAC1 witness that endpoint declares bmAttributes usage type
+// 00, "data", so no property of the endpoint itself distinguishes it from
+// audio. Excluding interfaces that have an OUT endpoint sidesteps the
+// question rather than trusting a field real hardware fills in wrongly.
+uint8_t uac_find_output_streaming_interface(const uint8_t *d, size_t len);
+uint8_t uac_find_input_streaming_interface(const uint8_t *d, size_t len);
 
 // Parses a full configuration descriptor. Returns false if the descriptor
 // contains no audio streaming interface with an isochronous OUT endpoint --

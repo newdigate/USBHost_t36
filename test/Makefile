@@ -40,8 +40,11 @@ test_feedback: test_feedback.cpp ../usb_audio_feedback.cpp $(H_FEEDBACK)
 test_pack: test_pack.cpp ../usb_audio_parse.cpp $(H_PARSE)
 	$(CXX) $(CXXFLAGS) -o $@ test_pack.cpp ../usb_audio_parse.cpp
 
-test_uac2_parse: test_uac2_parse.cpp ../usb_audio2_parse.cpp $(H_PARSE2)
-	$(CXX) $(CXXFLAGS) -o $@ test_uac2_parse.cpp ../usb_audio2_parse.cpp
+# Links usb_audio_parse.cpp too: the two interface finders live there and are
+# shared by both parsers (see uac_find_output_streaming_interface). Before
+# that they were duplicated, and this link line was one file shorter.
+test_uac2_parse: test_uac2_parse.cpp ../usb_audio2_parse.cpp ../usb_audio_parse.cpp $(H_PARSE2)
+	$(CXX) $(CXXFLAGS) -o $@ test_uac2_parse.cpp ../usb_audio2_parse.cpp ../usb_audio_parse.cpp
 
 test_stream_config: test_stream_config.cpp ../usb_audio_parse.cpp $(H_PARSE)
 	$(CXX) $(CXXFLAGS) -o $@ test_stream_config.cpp ../usb_audio_parse.cpp

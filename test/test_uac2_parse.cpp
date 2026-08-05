@@ -58,11 +58,13 @@ static void test_clock_cur_setup(void)
 //   AS interface 1 alt 2: same terminal link/channels; FORMAT_TYPE I
 //     subslot 2 / resolution 16; ENDPOINT OUT 0x01 wMaxPacketSize 400;
 //     ENDPOINT IN 0x82 feedback
-//   AS interface 2 (alt 0 zero-bandwidth, alt 1 one IN endpoint 0x81) is the
-//     capture-only interface: it carries no iso OUT endpoint on any alt, so
-//     it is not `streaming_interface` and its alts are not collected --
-//     exactly mirroring how uac1_parse_config ignores the microphone AS
-//     interface in headset_uac1_config.bin.
+//   AS interface 2 (alt 0 zero-bandwidth, alt 1 one IN endpoint 0x81 iso,
+//     wMaxPacketSize 800, AS_GENERAL bTerminalLink=0x16 / 8ch, FORMAT_TYPE I
+//     subslot 4 / resolution 24) is the capture interface: no iso OUT
+//     endpoint on any alt, so it is not `streaming_interface`, and it is now
+//     collected separately as `input_streaming_interface` with its alts in
+//     in_alts[]. Until 2026-08-05 those alts were dropped entirely, which is
+//     why the host had no way to record from this device.
 //   Trailing interface 3 (class 0xFE, DFU) is outside the audio IAD and is
 //     naturally skipped (bInterfaceClass != AUDIO).
 static uint8_t fixture[4096];
@@ -114,6 +116,10 @@ static void test_identifies_interfaces(void)
 	// Interface 1, not 2 -- interface 2 is the capture-only (8ch IN) AS
 	// interface and carries no iso OUT endpoint on either of its alts.
 	CHECK_EQ(t.streaming_interface, 1);
+	// ...which is exactly what makes it the INPUT interface. Interface 1
+	// also has an IN endpoint (feedback 0x82), so direction alone would
+	// have picked the wrong one; the absence of an iso OUT is what decides.
+	CHECK_EQ(t.input_streaming_interface, 2);
 }
 
 // The load-bearing check: the clock chain is terminal(2) -CSourceID-> 0x28
@@ -163,6 +169,100 @@ static void test_collects_alt_settings(void)
 	CHECK_EQ(t.alts[2].feedback_endpoint, 0x82);
 	CHECK_EQ(t.alts[2].feedback_max_packet, 4);
 	CHECK_EQ(t.alts[2].rate_count, 0);
+}
+
+// The capture interface, which this parser dropped on the floor until
+// 2026-08-05. Ground truth from the descriptor walk in the landmark list.
+static void test_collects_input_alt_settings(void)
+{
+	UAC1Topology t;
+	CHECK(uac2_parse_config(fixture, fixture_len, &t));
+	CHECK_EQ(t.in_alt_count, 2);           // alts 0, 1 on interface 2
+
+	CHECK_EQ(t.in_alts[0].alternate_setting, 0);
+	CHECK_EQ(t.in_alts[0].endpoint_address, 0);   // zero-bandwidth
+
+	CHECK_EQ(t.in_alts[1].alternate_setting, 1);
+	CHECK_EQ(t.in_alts[1].channels, 8);
+	CHECK_EQ(t.in_alts[1].subframe_size, 4);
+	CHECK_EQ(t.in_alts[1].bit_resolution, 24);
+	CHECK_EQ(t.in_alts[1].endpoint_address, 0x81);
+	CHECK_EQ(t.in_alts[1].endpoint_address & 0x80, 0x80);   // IN bit set
+	CHECK_EQ(t.in_alts[1].max_packet_size, 800);
+	// bmAttributes 0x05: isochronous (bits 1:0 = 01), ASYNCHRONOUS
+	// (bits 3:2 = 01), data (bits 5:4 = 00). The device free-runs its own
+	// converter and sends what it produces -- the host cannot pace it, which
+	// is the whole clock-ownership problem the input direction introduces.
+	CHECK_EQ(t.in_alts[1].endpoint_attributes, 0x05);
+	// An input stream has no feedback endpoint: the device is the source
+	// and has nothing to report about a rate it sets itself. If this ever
+	// reads non-zero, an audio endpoint has been mistaken for feedback.
+	CHECK_EQ(t.in_alts[1].feedback_endpoint, 0);
+	CHECK_EQ(t.in_alts[1].rate_count, 0);   // UAC2 rates are runtime, as above
+}
+
+// The input path's terminal link is 0x16 -- an OUTPUT_TERMINAL (USB
+// streaming), because for a capture stream the USB side is the sink. Its
+// bCSourceID sits one byte further along than an INPUT_TERMINAL's, so a
+// parser that recorded only input terminals resolves nothing here.
+//
+// Both directions landing on 0x29 is a fact about THIS device, not about the
+// class: the MC200 runs capture and playback off one clock selector. That is
+// what will let Stage C size both streams from one rate estimate -- and it is
+// recorded as a measurement rather than assumed, because a device with two
+// clocks would need the input rate set on its own entity.
+static void test_resolves_input_clock_through_output_terminal(void)
+{
+	UAC1Topology t;
+	CHECK(uac2_parse_config(fixture, fixture_len, &t));
+	CHECK_EQ(t.in_clock_source_id, 0x29);
+	CHECK_EQ(t.in_clock_source_id, t.clock_source_id);
+}
+
+static void test_finds_input_alt_by_format(void)
+{
+	UAC1Topology t;
+	CHECK(uac2_parse_config(fixture, fixture_len, &t));
+	CHECK_EQ(uac2_find_in_alt(&t, 8, 24), 1);
+	CHECK_EQ(uac2_find_in_alt(&t, 8, 16), -1);   // capture offers 24-bit only
+	CHECK_EQ(uac2_find_in_alt(&t, 2, 24), -1);   // and 8 channels only
+	CHECK_EQ(uac2_find_in_alt(0, 8, 24), -1);
+
+	// Not the same as the output search: the witness's playback interface
+	// offers 16-bit and its capture interface does not, so a direction flag
+	// defaulted the wrong way would silently select a format the device
+	// never advertised on that interface.
+	CHECK_EQ(uac2_find_alt(&t, 8, 16), 2);
+	CHECK_EQ(uac2_find_alt(&t, 8, 24), 1);
+}
+
+// An output-only UAC2 device must report no input rather than mis-assigning
+// its feedback endpoint's interface. Built by truncating the fixture just
+// before AS interface 2's descriptor, which the landmark list places at the
+// interface descriptor whose bInterfaceNumber is 2.
+static void test_output_only_device_reports_no_input(void)
+{
+	size_t cut = 0;
+	for (size_t i = 0; i + 1 < fixture_len && fixture[i] >= 2; i += fixture[i]) {
+		if (fixture[i + 1] == 0x04 && fixture[i] >= 9 && fixture[i + 2] == 2) {
+			cut = i;
+			break;
+		}
+	}
+	CHECK(cut > 0);
+
+	UAC1Topology t;
+	CHECK(uac2_parse_config(fixture, cut, &t));
+	CHECK_EQ(t.streaming_interface, 1);
+	CHECK_EQ(t.input_streaming_interface, 0xFF);
+	CHECK_EQ(t.in_alt_count, 0);
+	CHECK_EQ(t.in_clock_source_id, 0);
+	CHECK_EQ(uac2_find_in_alt(&t, 8, 24), -1);
+	// The output path is untouched by the input work -- including the
+	// feedback endpoint on the very interface that also has an IN endpoint.
+	CHECK_EQ(t.alt_count, 3);
+	CHECK_EQ(t.alts[1].feedback_endpoint, 0x82);
+	CHECK_EQ(t.clock_source_id, 0x29);
 }
 
 static void test_finds_alt_by_format(void)
@@ -292,6 +392,10 @@ int main(void)
 	test_identifies_interfaces();
 	test_resolves_clock_source_through_selector();
 	test_collects_alt_settings();
+	test_collects_input_alt_settings();
+	test_resolves_input_clock_through_output_terminal();
+	test_finds_input_alt_by_format();
+	test_output_only_device_reports_no_input();
 	test_finds_alt_by_format();
 	test_parses_with_config_header_prefix();
 	test_survives_truncation();

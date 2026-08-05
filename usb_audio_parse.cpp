@@ -36,8 +36,9 @@ static bool is_speaker_terminal(uint16_t tt)
 }
 
 // Finds the audio streaming interface carrying an isochronous OUT endpoint.
-// Returns 0xFF if there is none.
-static uint8_t find_output_streaming_interface(const uint8_t *d, size_t len)
+// Returns 0xFF if there is none. Shared with the UAC2 parser -- see the
+// header for why these two are not per-class.
+uint8_t uac_find_output_streaming_interface(const uint8_t *d, size_t len)
 {
 	uint8_t cur = 0xFF;
 	bool cur_is_stream = false;
@@ -65,7 +66,7 @@ static uint8_t find_output_streaming_interface(const uint8_t *d, size_t len)
 // "data", so no property of the endpoint itself distinguishes it from audio.
 // Excluding interfaces that have an OUT endpoint sidesteps the question rather
 // than trusting a field real hardware fills in wrongly.
-static uint8_t find_input_streaming_interface(const uint8_t *d, size_t len)
+uint8_t uac_find_input_streaming_interface(const uint8_t *d, size_t len)
 {
 	uint8_t cur = 0xFF, best = 0xFF;
 	bool cur_is_stream = false, saw_in = false, saw_out = false;
@@ -98,8 +99,8 @@ bool uac1_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out)
 	out->input_streaming_interface = 0xFF;
 	out->in_alt_count = 0;
 
-	uint8_t stream_if = find_output_streaming_interface(desc, len);
-	uint8_t in_if = find_input_streaming_interface(desc, len);
+	uint8_t stream_if = uac_find_output_streaming_interface(desc, len);
+	uint8_t in_if = uac_find_input_streaming_interface(desc, len);
 	out->input_streaming_interface = in_if;
 	if (stream_if == 0xFF) return false;
 	out->streaming_interface = stream_if;
@@ -228,7 +229,7 @@ bool uac1_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out)
 	for (uint8_t k = 0; k < fu_count; k++) {
 		if (fu_ids[k] == speaker_src) { out->feature_unit_id = speaker_src; break; }
 	}
-	// Defensive, not reachable in practice: once find_output_streaming_interface
+	// Defensive, not reachable in practice: once uac_find_output_streaming_interface
 	// has located stream_if, the main pass above always records at least one
 	// alt for that interface, so alt_count > 0 here always holds.
 	return out->alt_count > 0;

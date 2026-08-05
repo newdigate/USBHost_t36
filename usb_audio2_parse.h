@@ -38,4 +38,9 @@ bool uac2_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out);
 // runtime.
 int uac2_find_alt(const UAC1Topology *t, uint8_t channels, uint8_t bits);
 
+// The same over the INPUT alternate settings, and separate for the same
+// reason uac1_find_in_alt is: every existing caller means "output", and a
+// defaulted direction flag is how that silently stops being true.
+int uac2_find_in_alt(const UAC1Topology *t, uint8_t channels, uint8_t bits);
+
 #endif // USB_AUDIO2_PARSE_H_

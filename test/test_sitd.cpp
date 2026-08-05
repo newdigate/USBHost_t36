@@ -449,6 +449,21 @@ static void test_fill_in(void)
 	CHECK_EQ(sitd_fill_in(n, 3, 2, 0, 0, fill_buf, 0, 0, false), false);
 }
 
+static void test_disarm(void)
+{
+	// A recycled node carries its previous life's ACTIVE status: alloc does
+	// not zero. Disarm must read back inactive so the node can be LINKED
+	// before it is armed (the priming margin in usb_audio.cpp).
+	sitd_pool_init();
+	sitd_t *n = sitd_alloc();
+	CHECK_EQ(sitd_fill_out(n, 3, 2, 0, 0, fill_buf, 96, 0, false), true);
+	sitd_disarm(n);
+	sitd_status_t st;
+	sitd_get_status(n, &st);
+	CHECK_EQ(st.active, false);
+	sitd_disarm(NULL);   // must not crash
+}
+
 int main(void)
 {
 	test_sitd_layout();
@@ -461,6 +476,7 @@ int main(void)
 	test_fill_in();
 	test_fill_refill_leaves_nothing_stale();
 	test_fill_untouched_on_rejection();
+	test_disarm();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

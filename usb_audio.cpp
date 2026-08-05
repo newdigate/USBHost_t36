@@ -440,28 +440,40 @@ bool USBAudioOut::beginStreaming()
 	// pattern it is a guaranteed discontinuity, which is how it was found
 	// (first cooperative run: first_error_index landed at exactly one ring
 	// revolution plus one). +2 is the same not-already-walked margin as
-	// postTestPacket(); the last-filled slots wrap to positions the
-	// controller just passed, which are not revisited for a revolution.
+	// postTestPacket(). The two slots behind the start position transmit
+	// BEFORE the first filled slot, so they stay INERT (linked disarmed) on
+	// their first pass rather than carrying the ring's newest chunks --
+	// armed, they re-create the seam one revolution later at their stale
+	// non-retransmission, which the HS pattern rerun measured exactly.
+	// ring_next starts AT them so service() hands them the next chunks
+	// within microseconds, a full revolution before their frames come up.
 	// Ring index == frame-list index: RING_SLOTS matches the controller's
 	// PERIODIC_LIST_SIZE, which the 0..31 linking below always assumed.
 	uint32_t start = periodic_current_frame() + 2;
 	for (uint32_t k = 0; k < RING_SLOTS; k++) {
 		uint32_t i = (start + k) % RING_SLOTS;
-		uint16_t bytes = uac1_frame_bytes_mhz(&frame_accum, effectiveRateMilliHz(),
-		                                      req_channels, req_bits / 8);
-		if (bytes == 0 || bytes > MAX_FRAME_BYTES) { stopStreaming(); return false; }
-		fillFrame(ring_buf[i], bytes);
-		// ioc=false: service() polls the status word, so interrupt-on-
-		// complete would only add ~1000 IRQ/s into an ISR with no siTD
-		// handling.
-		if (!sitd_fill_out(ring[i], device->address, iso_endpoint, 0, 0,
-		                   ring_buf[i], bytes, 0, false)) {
-			stopStreaming();
-			return false;
+		if (k < RING_SLOTS - 2) {
+			uint16_t bytes = uac1_frame_bytes_mhz(&frame_accum,
+			                                      effectiveRateMilliHz(),
+			                                      req_channels, req_bits / 8);
+			if (bytes == 0 || bytes > MAX_FRAME_BYTES) { stopStreaming(); return false; }
+			fillFrame(ring_buf[i], bytes);
+			// ioc=false: service() polls the status word, so interrupt-on-
+			// complete would only add ~1000 IRQ/s into an ISR with no siTD
+			// handling.
+			if (!sitd_fill_out(ring[i], device->address, iso_endpoint, 0, 0,
+			                   ring_buf[i], bytes, 0, false)) {
+				stopStreaming();
+				return false;
+			}
+		} else {
+			// Alloc recycles without zeroing: a stale ACTIVE bit here is a
+			// transmission from a previous life's buffer.
+			sitd_disarm(ring[i]);
 		}
 		sitd_link(periodic_frame_slot(i), ring[i], (uint16_t)i);
 	}
-	ring_next = start % RING_SLOTS;
+	ring_next = (start + RING_SLOTS - 2) % RING_SLOTS;
 
 	// Arm the feedback reader if this alternate setting advertises one.
 	// Failure to arm is not failure to stream: the loop just stays open,
@@ -545,19 +557,39 @@ bool USBAudioOut::beginStreamingHS(const UAC1AltSetting *alt)
 	// the first revolution transmits rotated and the first refill is a
 	// payload discontinuity, R7's first_error_index landing at exactly one
 	// ring revolution plus one sample.
+	//
+	// The two slots behind the start position stay INERT on their first
+	// pass. They transmit BEFORE the first filled slot, so giving them
+	// payload plays the ring's newest chunks first and re-creates the seam
+	// one revolution later at their stale non-retransmission -- measured:
+	// the first wire-order attempt armed all 32 and reproduced
+	// first_error_index 11289 exactly. Linked disarmed instead, they carry
+	// nothing on revolution one; ring_next starts AT them, so service()
+	// hands them the next two chunks within microseconds -- a full
+	// revolution before their frames come up.
 	uint32_t start = periodic_current_frame() + 2;
 	for (uint32_t k = 0; k < RING_SLOTS; k++) {
 		uint32_t i = (start + k) % RING_SLOTS;
 		ring_hs[i] = itd_alloc();
 		if (!ring_hs[i]) { stopStreaming(); return false; }
-		fillFrameHS(i);
-		if (!itd_fill_out(ring_hs[i], device->address, iso_endpoint,
-		                  ring_buf_hs[i], uframe_len[i], alt_mps_hs, false)) {
-			stopStreaming(); return false;
+		if (k < RING_SLOTS - 2) {
+			fillFrameHS(i);
+			if (!itd_fill_out(ring_hs[i], device->address, iso_endpoint,
+			                  ring_buf_hs[i], uframe_len[i], alt_mps_hs,
+			                  false)) {
+				stopStreaming(); return false;
+			}
+		} else {
+			// Alloc recycles without zeroing: disarm, or the controller
+			// gets a previous life's ACTIVE bits. uframe_len too -- the
+			// harvest loop reads it to decide "done", and stale lengths
+			// would make an inert slot look forever in flight.
+			itd_disarm(ring_hs[i]);
+			for (unsigned m = 0; m < 8; m++) uframe_len[i][m] = 0;
 		}
 		itd_link(periodic_frame_slot(i), ring_hs[i], (uint16_t)i);
 	}
-	ring_next = start % RING_SLOTS;
+	ring_next = (start + RING_SLOTS - 2) % RING_SLOTS;
 
 	// Arm the feedback reader if this alternate setting advertises one --
 	// same contract as the FS arm: failure to arm is not failure to

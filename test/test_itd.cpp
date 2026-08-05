@@ -426,10 +426,30 @@ static void test_fill_in_rejects(void)
 	CHECK_EQ(itd_fill_in(&n, 9, 2, buf, 1, 1, false), true);
 }
 
+static void test_disarm(void)
+{
+	// A recycled node carries its previous life's ACTIVE bits: alloc does
+	// not zero. Disarm must leave every transaction inactive so the node
+	// can be LINKED before it is armed -- the priming margin in
+	// usb_audio.cpp links two such slots one revolution early.
+	itd_pool_init();
+	itd_t *n = itd_alloc();
+	uint16_t lens[8] = {176, 208, 176, 176, 208, 176, 176, 208};
+	CHECK_EQ(itd_fill_out(n, 3, 1, itd_buf, lens, 208, false), true);
+	itd_disarm(n);
+	for (int k = 0; k < 8; k++) {
+		itd_txn_status_t st;
+		itd_get_txn_status(n, k, &st);
+		CHECK_EQ(st.active, false);
+	}
+	itd_disarm(NULL);   // must not crash
+}
+
 int main(void)
 {
 	test_itd_layout();
 	test_itd_pool();
+	test_disarm();
 	test_fill_out();
 	test_txn_status();
 	test_link_unlink();

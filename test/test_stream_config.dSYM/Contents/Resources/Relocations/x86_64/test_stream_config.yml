@@ -2,29 +2,30 @@
 triple:          'x86_64-apple-darwin'
 binary-path:     test_stream_config
 relocations:
-  - { offsetInCU: 0x26, offset: 0x26, size: 0x8, addend: 0x0, symName: _main, symObjAddr: 0x0, symBinAddr: 0x100001630, symSize: 0x80 }
+  - { offsetInCU: 0x26, offset: 0x26, size: 0x8, addend: 0x0, symName: _main, symObjAddr: 0x0, symBinAddr: 0x100001490, symSize: 0x80 }
   - { offsetInCU: 0x4D, offset: 0x4D, size: 0x8, addend: 0x0, symName: __ZL8failures, symObjAddr: 0x3348, symBinAddr: 0x100008000, symSize: 0x0 }
   - { offsetInCU: 0x6D, offset: 0x6D, size: 0x8, addend: 0x0, symName: __ZL6checks, symObjAddr: 0x334C, symBinAddr: 0x100008004, symSize: 0x0 }
-  - { offsetInCU: 0x81, offset: 0x81, size: 0x8, addend: 0x0, symName: _main, symObjAddr: 0x0, symBinAddr: 0x100001630, symSize: 0x80 }
-  - { offsetInCU: 0x9A, offset: 0x9A, size: 0x8, addend: 0x0, symName: __ZL15test_round_tripv, symObjAddr: 0x80, symBinAddr: 0x1000016B0, symSize: 0x510 }
-  - { offsetInCU: 0x26C, offset: 0x26C, size: 0x8, addend: 0x0, symName: __ZL24test_same_device_matchesv, symObjAddr: 0x590, symBinAddr: 0x100001BC0, symSize: 0x230 }
-  - { offsetInCU: 0x345, offset: 0x345, size: 0x8, addend: 0x0, symName: __ZL27test_transport_swap_differsv, symObjAddr: 0x7C0, symBinAddr: 0x100001DF0, symSize: 0x1B0 }
-  - { offsetInCU: 0x3F2, offset: 0x3F2, size: 0x8, addend: 0x0, symName: __ZL31test_each_field_is_load_bearingv, symObjAddr: 0x970, symBinAddr: 0x100001FA0, symSize: 0x680 }
-  - { offsetInCU: 0x5A7, offset: 0x5A7, size: 0x8, addend: 0x0, symName: __ZL26test_null_and_unconfiguredv, symObjAddr: 0xFF0, symBinAddr: 0x100002620, symSize: 0x540 }
-  - { offsetInCU: 0x773, offset: 0x773, size: 0x8, addend: 0x0, symName: __ZL8uac2_altv, symObjAddr: 0x1530, symBinAddr: 0x100002B60, symSize: 0x50 }
-  - { offsetInCU: 0x7A0, offset: 0x7A0, size: 0x8, addend: 0x0, symName: __ZL8uac1_altv, symObjAddr: 0x1580, symBinAddr: 0x100002BB0, symSize: 0x4A }
-  - { offsetInCU: 0x26, offset: 0x951, size: 0x8, addend: 0x0, symName: __Z17uac1_parse_configPKhmP12UAC1Topology, symObjAddr: 0x0, symBinAddr: 0x100002C00, symSize: 0x7B0 }
-  - { offsetInCU: 0x4F, offset: 0x97A, size: 0x8, addend: 0x0, symName: __Z17uac1_parse_configPKhmP12UAC1Topology, symObjAddr: 0x0, symBinAddr: 0x100002C00, symSize: 0x7B0 }
-  - { offsetInCU: 0x206, offset: 0xB31, size: 0x8, addend: 0x0, symName: __ZL31find_output_streaming_interfacePKhm, symObjAddr: 0x7B0, symBinAddr: 0x1000033B0, symSize: 0x190 }
-  - { offsetInCU: 0x294, offset: 0xBBF, size: 0x8, addend: 0x0, symName: __ZL19is_speaker_terminalt, symObjAddr: 0x940, symBinAddr: 0x100003540, symSize: 0x50 }
-  - { offsetInCU: 0x2C0, offset: 0xBEB, size: 0x8, addend: 0x0, symName: __Z22uac1_alt_supports_ratePK14UAC1AltSettingj, symObjAddr: 0x990, symBinAddr: 0x100003590, symSize: 0xF0 }
-  - { offsetInCU: 0x316, offset: 0xC41, size: 0x8, addend: 0x0, symName: __Z27uac1_alt_needs_rate_requestPK14UAC1AltSetting, symObjAddr: 0xA80, symBinAddr: 0x100003680, symSize: 0x60 }
-  - { offsetInCU: 0x342, offset: 0xC6D, size: 0x8, addend: 0x0, symName: __Z13uac1_find_altPK12UAC1Topologyjhh, symObjAddr: 0xAE0, symBinAddr: 0x1000036E0, symSize: 0xF0 }
-  - { offsetInCU: 0x3D0, offset: 0xCFB, size: 0x8, addend: 0x0, symName: __Z16uac1_frame_bytesPjjhh, symObjAddr: 0xBD0, symBinAddr: 0x1000037D0, symSize: 0x40 }
-  - { offsetInCU: 0x426, offset: 0xD51, size: 0x8, addend: 0x0, symName: __ZL18frame_bytes_scaledPjjjhh, symObjAddr: 0xC10, symBinAddr: 0x100003810, symSize: 0xA0 }
-  - { offsetInCU: 0x498, offset: 0xDC3, size: 0x8, addend: 0x0, symName: __Z20uac1_frame_bytes_mhzPjjhh, symObjAddr: 0xCB0, symBinAddr: 0x1000038B0, symSize: 0x40 }
-  - { offsetInCU: 0x4EE, offset: 0xE19, size: 0x8, addend: 0x0, symName: __Z21uac2_uframe_bytes_mhzPjjhh, symObjAddr: 0xCF0, symBinAddr: 0x1000038F0, symSize: 0x40 }
-  - { offsetInCU: 0x544, offset: 0xE6F, size: 0x8, addend: 0x0, symName: __Z10uac_pack16PhPKsjhhh, symObjAddr: 0xD30, symBinAddr: 0x100003930, symSize: 0x240 }
-  - { offsetInCU: 0x634, offset: 0xF5F, size: 0x8, addend: 0x0, symName: __Z17uac_stream_configP15UACStreamConfigbPK14UAC1AltSetting, symObjAddr: 0xF70, symBinAddr: 0x100003B70, symSize: 0xC0 }
-  - { offsetInCU: 0x678, offset: 0xFA3, size: 0x8, addend: 0x0, symName: __Z23uac_stream_config_equalPK15UACStreamConfigS1_, symObjAddr: 0x1030, symBinAddr: 0x100003C30, symSize: 0x101 }
+  - { offsetInCU: 0x81, offset: 0x81, size: 0x8, addend: 0x0, symName: _main, symObjAddr: 0x0, symBinAddr: 0x100001490, symSize: 0x80 }
+  - { offsetInCU: 0x9A, offset: 0x9A, size: 0x8, addend: 0x0, symName: __ZL15test_round_tripv, symObjAddr: 0x80, symBinAddr: 0x100001510, symSize: 0x510 }
+  - { offsetInCU: 0x26C, offset: 0x26C, size: 0x8, addend: 0x0, symName: __ZL24test_same_device_matchesv, symObjAddr: 0x590, symBinAddr: 0x100001A20, symSize: 0x230 }
+  - { offsetInCU: 0x345, offset: 0x345, size: 0x8, addend: 0x0, symName: __ZL27test_transport_swap_differsv, symObjAddr: 0x7C0, symBinAddr: 0x100001C50, symSize: 0x1B0 }
+  - { offsetInCU: 0x3F2, offset: 0x3F2, size: 0x8, addend: 0x0, symName: __ZL31test_each_field_is_load_bearingv, symObjAddr: 0x970, symBinAddr: 0x100001E00, symSize: 0x680 }
+  - { offsetInCU: 0x5A7, offset: 0x5A7, size: 0x8, addend: 0x0, symName: __ZL26test_null_and_unconfiguredv, symObjAddr: 0xFF0, symBinAddr: 0x100002480, symSize: 0x540 }
+  - { offsetInCU: 0x773, offset: 0x773, size: 0x8, addend: 0x0, symName: __ZL8uac2_altv, symObjAddr: 0x1530, symBinAddr: 0x1000029C0, symSize: 0x50 }
+  - { offsetInCU: 0x7A0, offset: 0x7A0, size: 0x8, addend: 0x0, symName: __ZL8uac1_altv, symObjAddr: 0x1580, symBinAddr: 0x100002A10, symSize: 0x4A }
+  - { offsetInCU: 0x26, offset: 0x951, size: 0x8, addend: 0x0, symName: __Z17uac1_parse_configPKhmP12UAC1Topology, symObjAddr: 0x0, symBinAddr: 0x100002A60, symSize: 0x7B0 }
+  - { offsetInCU: 0x4F, offset: 0x97A, size: 0x8, addend: 0x0, symName: __Z17uac1_parse_configPKhmP12UAC1Topology, symObjAddr: 0x0, symBinAddr: 0x100002A60, symSize: 0x7B0 }
+  - { offsetInCU: 0x206, offset: 0xB31, size: 0x8, addend: 0x0, symName: __ZL31find_output_streaming_interfacePKhm, symObjAddr: 0x7B0, symBinAddr: 0x100003210, symSize: 0x190 }
+  - { offsetInCU: 0x294, offset: 0xBBF, size: 0x8, addend: 0x0, symName: __ZL19is_speaker_terminalt, symObjAddr: 0x940, symBinAddr: 0x1000033A0, symSize: 0x50 }
+  - { offsetInCU: 0x2C0, offset: 0xBEB, size: 0x8, addend: 0x0, symName: __Z22uac1_alt_supports_ratePK14UAC1AltSettingj, symObjAddr: 0x990, symBinAddr: 0x1000033F0, symSize: 0xF0 }
+  - { offsetInCU: 0x316, offset: 0xC41, size: 0x8, addend: 0x0, symName: __Z27uac1_alt_needs_rate_requestPK14UAC1AltSetting, symObjAddr: 0xA80, symBinAddr: 0x1000034E0, symSize: 0x60 }
+  - { offsetInCU: 0x342, offset: 0xC6D, size: 0x8, addend: 0x0, symName: __Z13uac1_find_altPK12UAC1Topologyjhh, symObjAddr: 0xAE0, symBinAddr: 0x100003540, symSize: 0xF0 }
+  - { offsetInCU: 0x3D0, offset: 0xCFB, size: 0x8, addend: 0x0, symName: __Z16uac1_frame_bytesPjjhh, symObjAddr: 0xBD0, symBinAddr: 0x100003630, symSize: 0x40 }
+  - { offsetInCU: 0x426, offset: 0xD51, size: 0x8, addend: 0x0, symName: __ZL18frame_bytes_scaledPjjjhh, symObjAddr: 0xC10, symBinAddr: 0x100003670, symSize: 0xA0 }
+  - { offsetInCU: 0x498, offset: 0xDC3, size: 0x8, addend: 0x0, symName: __Z20uac1_frame_bytes_mhzPjjhh, symObjAddr: 0xCB0, symBinAddr: 0x100003710, symSize: 0x40 }
+  - { offsetInCU: 0x4EE, offset: 0xE19, size: 0x8, addend: 0x0, symName: __Z21uac2_uframe_bytes_mhzPjjhh, symObjAddr: 0xCF0, symBinAddr: 0x100003750, symSize: 0x40 }
+  - { offsetInCU: 0x544, offset: 0xE6F, size: 0x8, addend: 0x0, symName: __Z10uac_pack16PhPKsjhhh, symObjAddr: 0xD30, symBinAddr: 0x100003790, symSize: 0x240 }
+  - { offsetInCU: 0x634, offset: 0xF5F, size: 0x8, addend: 0x0, symName: __Z17uacv_pack_patternPhjhhPjPb, symObjAddr: 0xF70, symBinAddr: 0x1000039D0, symSize: 0x1A0 }
+  - { offsetInCU: 0x726, offset: 0x1051, size: 0x8, addend: 0x0, symName: __Z17uac_stream_configP15UACStreamConfigbPK14UAC1AltSetting, symObjAddr: 0x1110, symBinAddr: 0x100003B70, symSize: 0xC0 }
+  - { offsetInCU: 0x76E, offset: 0x1099, size: 0x8, addend: 0x0, symName: __Z23uac_stream_config_equalPK15UACStreamConfigS1_, symObjAddr: 0x11D0, symBinAddr: 0x100003C30, symSize: 0x101 }
 ...

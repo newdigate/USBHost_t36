@@ -186,6 +186,7 @@ itd_t *itd_alloc(void)
 	return node;
 }
 
+
 void itd_free(itd_t *node)
 {
 	if (!node) return;
@@ -212,6 +213,20 @@ void itd_free(itd_t *node)
 static inline void iso_publish_barrier(void)
 {
 	__sync_synchronize();
+}
+
+void itd_disarm(itd_t *node)
+{
+	if (!node) return;
+	for (int k = 0; k < 8; k++) node->transaction[k] = 0;
+	iso_publish_barrier();
+}
+
+void sitd_disarm(sitd_t *node)
+{
+	if (!node) return;
+	node->status = 0;
+	iso_publish_barrier();
 }
 
 bool itd_fill_out(itd_t *node, uint8_t dev_addr, uint8_t endpoint,

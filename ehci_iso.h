@@ -141,6 +141,17 @@ void itd_get_txn_status(const itd_t *node, unsigned txn, itd_txn_status_t *out);
 // contract and traversal bounds as the siTD variants (sitd_link/sitd_unlink),
 // with the iTD link type (frame-list type bits 00).
 void itd_link(volatile uint32_t *frame_slot, itd_t *node, uint16_t frame);
+
+// Make a descriptor safe to LINK before it is armed. Alloc recycles from a
+// free list without zeroing, so a node can carry ACTIVE transaction bits
+// from its previous life still pointing at a retired buffer -- linking one
+// un-disarmed hands those to the controller. Clears every transaction word
+// (iTD) or the status word (siTD); link fields and software bookkeeping are
+// the link call's business. Exists for ring slots that must occupy their
+// frame-list position one revolution before their first real payload -- see
+// the priming margin in usb_audio.cpp.
+void itd_disarm(itd_t *node);
+void sitd_disarm(sitd_t *node);
 bool itd_unlink(volatile uint32_t *frame_slot, itd_t *node);
 
 // Fill an iTD for one frame of high-speed isochronous OUT: up to eight

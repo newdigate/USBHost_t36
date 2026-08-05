@@ -317,6 +317,14 @@ private:
     // running the previous device's ring; all-zero while nothing is armed.
     UACStreamConfig armed = {};
 
+    // The ring position expected to complete next, in WIRE order. The
+    // controller walks the periodic list from wherever it happens to be at
+    // beginStreaming() -- not from slot 0 -- so slots complete strictly in
+    // that rotated order. Priming and refilling must both follow it, or the
+    // payload stream is stitched together rotated; see the priming comment
+    // in beginStreaming() for how the validator's pattern found this.
+    uint32_t ring_next = 0;
+
     bool     is_streaming   = false;
     uint32_t packets_sent   = 0;
     uint32_t underrun_count = 0;

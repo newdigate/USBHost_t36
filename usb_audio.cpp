@@ -431,7 +431,22 @@ bool USBAudioOut::beginStreaming()
 	frame_accum = 0;
 	usb_audio_fifo_reset(&fifo);
 	topUpFromTone();
-	for (uint32_t i = 0; i < RING_SLOTS; i++) {
+	// Prime in WIRE order, not slot order. The controller starts
+	// transmitting at its CURRENT frame position, so filling 0..31 in index
+	// order plays the whole first ring revolution rotated -- chunks F..31
+	// first, then 0..F-1 -- with a payload seam at the first refill. For
+	// audio that is 32 ms of out-of-order samples once per stream start,
+	// inaudible and invisible to every counter; under the validator's
+	// pattern it is a guaranteed discontinuity, which is how it was found
+	// (first cooperative run: first_error_index landed at exactly one ring
+	// revolution plus one). +2 is the same not-already-walked margin as
+	// postTestPacket(); the last-filled slots wrap to positions the
+	// controller just passed, which are not revisited for a revolution.
+	// Ring index == frame-list index: RING_SLOTS matches the controller's
+	// PERIODIC_LIST_SIZE, which the 0..31 linking below always assumed.
+	uint32_t start = periodic_current_frame() + 2;
+	for (uint32_t k = 0; k < RING_SLOTS; k++) {
+		uint32_t i = (start + k) % RING_SLOTS;
 		uint16_t bytes = uac1_frame_bytes_mhz(&frame_accum, effectiveRateMilliHz(),
 		                                      req_channels, req_bits / 8);
 		if (bytes == 0 || bytes > MAX_FRAME_BYTES) { stopStreaming(); return false; }
@@ -446,6 +461,7 @@ bool USBAudioOut::beginStreaming()
 		}
 		sitd_link(periodic_frame_slot(i), ring[i], (uint16_t)i);
 	}
+	ring_next = start % RING_SLOTS;
 
 	// Arm the feedback reader if this alternate setting advertises one.
 	// Failure to arm is not failure to stream: the loop just stays open,
@@ -524,7 +540,14 @@ bool USBAudioOut::beginStreamingHS(const UAC1AltSetting *alt)
 	// device -- the honest verdict for a stream that genuinely restarted.
 	pat_primed = false;
 	topUpFromTone();
-	for (uint32_t i = 0; i < RING_SLOTS; i++) {
+	// Prime in WIRE order -- same seam as the FS ring, and where the
+	// validator's pattern actually caught it: filled 0..31 in index order,
+	// the first revolution transmits rotated and the first refill is a
+	// payload discontinuity, R7's first_error_index landing at exactly one
+	// ring revolution plus one sample.
+	uint32_t start = periodic_current_frame() + 2;
+	for (uint32_t k = 0; k < RING_SLOTS; k++) {
+		uint32_t i = (start + k) % RING_SLOTS;
 		ring_hs[i] = itd_alloc();
 		if (!ring_hs[i]) { stopStreaming(); return false; }
 		fillFrameHS(i);
@@ -534,6 +557,7 @@ bool USBAudioOut::beginStreamingHS(const UAC1AltSetting *alt)
 		}
 		itd_link(periodic_frame_slot(i), ring_hs[i], (uint16_t)i);
 	}
+	ring_next = start % RING_SLOTS;
 
 	// Arm the feedback reader if this alternate setting advertises one --
 	// same contract as the FS arm: failure to arm is not failure to
@@ -713,9 +737,20 @@ void USBAudioOut::service()
 			            fb_buf[k], sizeof(fb_buf[k]), fb_mps_hs, false);
 		}
 
-		for (uint32_t i = 0; i < RING_SLOTS; i++) {
+		// Harvest in WIRE order from ring_next, stopping at the first slot
+		// still active: the controller walks the list sequentially, so
+		// nothing after it can be done either. The old 0..31 index scan
+		// refilled out of wire order whenever completions straddled the
+		// ring's wrap -- payload chunks landing rotated on the wire, the
+		// same defect as index-order priming, just latency-triggered. A
+		// slot that never completes now stalls the ring visibly instead of
+		// leaving a silent one-frame hole per revolution; a starved device
+		// is a defect someone notices.
+		uint32_t serviced = 0;
+		while (serviced < RING_SLOTS) {
+			uint32_t i = (ring_next + serviced) % RING_SLOTS;
 			itd_t *n = ring_hs[i];
-			if (!n) continue;
+			if (!n) break;
 
 			bool done = true;
 			for (unsigned k = 0; k < 8 && done; k++) {
@@ -724,7 +759,7 @@ void USBAudioOut::service()
 				itd_get_txn_status(n, k, &st);
 				if (st.active) done = false;
 			}
-			if (!done) continue;         // hardware has not run it yet
+			if (!done) break;            // hardware has not run it yet
 
 			// Record what the controller reported about the microframes
 			// just finished, before the descriptor is reused -- same
@@ -755,7 +790,9 @@ void USBAudioOut::service()
 				packets_sent++;
 				if (frame_cb) frame_cb();
 			}
+			serviced++;
 		}
+		ring_next = (ring_next + serviced) % RING_SLOTS;
 		return;
 	}
 
@@ -796,13 +833,17 @@ void USBAudioOut::service()
 		             fb_buf[k], sizeof(fb_buf[k]), 0, false);
 	}
 
-	for (uint32_t i = 0; i < RING_SLOTS; i++) {
+	// Wire order with early exit, exactly as the HS loop above -- the FS ring
+	// has the same wrap-straddle rotation otherwise.
+	uint32_t serviced = 0;
+	while (serviced < RING_SLOTS) {
+		uint32_t i = (ring_next + serviced) % RING_SLOTS;
 		sitd_t *s = ring[i];
-		if (!s) continue;
+		if (!s) break;
 
 		sitd_status_t st;
 		sitd_get_status(s, &st);
-		if (st.active) continue;             // hardware has not run it yet
+		if (st.active) break;                // hardware has not run it yet
 
 		// Record what the controller reported about the packet just finished,
 		// before the descriptor is reused. A failed split transaction leaves
@@ -832,7 +873,7 @@ void USBAudioOut::service()
 		// stream drifts against the device's clock.
 		uint16_t bytes = uac1_frame_bytes_mhz(&frame_accum, fb_sizing_mhz,
 		                                      req_channels, req_bits / 8);
-		if (bytes == 0 || bytes > MAX_FRAME_BYTES) continue;
+		if (bytes == 0 || bytes > MAX_FRAME_BYTES) { serviced++; continue; }
 		fillFrame(ring_buf[i], bytes);
 		if (sitd_fill_out(s, device->address, iso_endpoint, 0, 0,
 		                  ring_buf[i], bytes, 0, false)) {
@@ -842,5 +883,7 @@ void USBAudioOut::service()
 			// than a free-running one (design spec section 8).
 			if (frame_cb) frame_cb();
 		}
+		serviced++;
 	}
+	ring_next = (ring_next + serviced) % RING_SLOTS;
 }

@@ -19,6 +19,14 @@
 #define EP_DIR_OUT         0x00
 #define EP_XFER_TYPE_MASK  0x03
 #define EP_XFER_ISO        0x01
+// USB 2.0 section 9.6.6, bmAttributes bits 5..4 Usage Type. Only 01 is an
+// explicit feedback endpoint: 00 is a data endpoint and 10 is an IMPLICIT
+// FEEDBACK DATA endpoint, which carries audio. Classifying on direction
+// instead -- "any IN iso endpoint is the feedback endpoint" -- is right only
+// while a device has at most one IN endpoint per alt, and points the rate
+// decoder at audio samples the moment one carries both directions.
+#define EP_USAGE_MASK      0x30
+#define EP_USAGE_FEEDBACK  0x10
 
 static bool is_speaker_terminal(uint16_t tt)
 {
@@ -136,8 +144,29 @@ bool uac1_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out)
 				// bRefresh and bSynchAddress. Zero means no feedback endpoint.
 				if (l >= 9 && b[8] != 0) alt->feedback_endpoint = b[8];
 			} else if (!is_out && is_iso) {
-				if (alt->feedback_endpoint == 0) alt->feedback_endpoint = b[2];
-				if (l >= 9) alt->feedback_refresh = b[7];
+				// Two ways to be the feedback endpoint, and BOTH are needed.
+				//
+				// bSynchAddress on the data endpoint is the authority, because
+				// real hardware does not set its own usage bits honestly: the
+				// XMOS UAC1 witness declares its feedback endpoint 0x82 with
+				// bmAttributes 0x01, usage type 00 = "data" (fixture
+				// xmos_uac1_async_feedback.bin). Believing the usage bits alone
+				// would lose that device's feedback entirely.
+				//
+				// The usage bits are the fallback for a device that declares
+				// 01 = Feedback but names no bSynchAddress, which is legal.
+				//
+				// What neither test admits is an IN endpoint that is plain
+				// audio -- usage 00 or 10, unnamed by bSynchAddress -- which is
+				// what a full-duplex device puts here. That used to be captured
+				// as the feedback endpoint on direction alone, pointing the
+				// rate decoder at samples.
+				bool named  = (alt->feedback_endpoint == b[2]);
+				bool claims = (b[3] & EP_USAGE_MASK) == EP_USAGE_FEEDBACK;
+				if (named || claims) {
+					if (alt->feedback_endpoint == 0) alt->feedback_endpoint = b[2];
+					if (l >= 9) alt->feedback_refresh = b[7];
+				}
 			}
 		}
 		i += l;

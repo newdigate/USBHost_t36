@@ -538,6 +538,109 @@ static void test_uframe_bytes(void)
 	CHECK_EQ(accum, 0);                    // exact over the repeat period
 }
 
+
+// --- endpoint classification: usage type, not direction ------------------
+//
+// USB 2.0 section 9.6.6 (page 298 of the 2024-09-27 revision), bmAttributes
+// bits 5..4 Usage Type: 00 = Data endpoint, 01 = Feedback endpoint,
+// 10 = Implicit feedback Data endpoint, 11 = Reserved.
+//
+// The parser used to call ANY non-OUT isochronous endpoint the feedback
+// endpoint, on direction alone. That is correct only for devices with at
+// most one IN endpoint per alt -- which was every device this bench had
+// until a full-duplex one turned up. On a device carrying audio IN and audio
+// OUT in one alternate setting it arms the feedback reader against the
+// microphone stream, and the rate decoder then reads audio samples.
+
+static uint8_t *put_iface(uint8_t *p, uint8_t num, uint8_t alt, uint8_t neps,
+                          uint8_t cls, uint8_t sub)
+{
+	*p++ = 9; *p++ = 0x04; *p++ = num; *p++ = alt; *p++ = neps;
+	*p++ = cls; *p++ = sub; *p++ = 0x00; *p++ = 0x00;
+	return p;
+}
+
+static uint8_t *put_fmt(uint8_t *p, uint8_t ch, uint8_t sub, uint8_t bits,
+                        uint32_t rate)
+{
+	*p++ = 11; *p++ = 0x24; *p++ = 0x02; *p++ = 0x01;
+	*p++ = ch; *p++ = sub; *p++ = bits; *p++ = 1;
+	*p++ = rate & 0xFF; *p++ = (rate >> 8) & 0xFF; *p++ = (rate >> 16) & 0xFF;
+	return p;
+}
+
+/* bLength 9 audio endpoint descriptor: adds bRefresh and bSynchAddress. */
+static uint8_t *put_ep(uint8_t *p, uint8_t addr, uint8_t attr, uint16_t mps,
+                       uint8_t refresh, uint8_t synch)
+{
+	*p++ = 9; *p++ = 0x05; *p++ = addr; *p++ = attr;
+	*p++ = mps & 0xFF; *p++ = (mps >> 8) & 0xFF; *p++ = 1;
+	*p++ = refresh; *p++ = synch;
+	return p;
+}
+
+static void test_in_data_endpoint_is_not_feedback(void)
+{
+	/* A full-duplex alt: OUT audio (usage 00) and IN audio (usage 00).
+	 * Neither declares a feedback endpoint, so there must not be one. */
+	uint8_t d[128], *p = d;
+	p = put_iface(p, 0, 0, 0, 0x01, 0x01);
+	p = put_iface(p, 1, 1, 2, 0x01, 0x02);
+	p = put_fmt(p, 2, 2, 16, 44100);
+	p = put_ep(p, 0x01, 0x01, 192, 0, 0);
+	p = put_ep(p, 0x81, 0x01, 192, 0, 0);      /* IN data, usage 00 */
+	UAC1Topology t;
+	CHECK_EQ(uac1_parse_config(d, (size_t)(p - d), &t), true);
+	const UAC1AltSetting *a = &t.alts[t.alt_count - 1];
+	CHECK_EQ(a->endpoint_address, 0x01);
+	CHECK_EQ(a->feedback_endpoint, 0);         /* the defect: was 0x81 */
+}
+
+static void test_in_feedback_endpoint_is_recognised(void)
+{
+	uint8_t d[128], *p = d;
+	p = put_iface(p, 0, 0, 0, 0x01, 0x01);
+	p = put_iface(p, 1, 1, 2, 0x01, 0x02);
+	p = put_fmt(p, 2, 2, 16, 44100);
+	p = put_ep(p, 0x01, 0x05, 192, 0, 0);
+	p = put_ep(p, 0x82, 0x11, 3, 4, 0);        /* IN, usage 01 = feedback */
+	UAC1Topology t;
+	CHECK_EQ(uac1_parse_config(d, (size_t)(p - d), &t), true);
+	const UAC1AltSetting *a = &t.alts[t.alt_count - 1];
+	CHECK_EQ(a->feedback_endpoint, 0x82);
+	CHECK_EQ(a->feedback_refresh, 4);
+}
+
+static void test_implicit_feedback_data_is_not_a_feedback_endpoint(void)
+{
+	/* Usage type 10 is an implicit feedback DATA endpoint -- it carries
+	 * audio. Decoding it as a rate would point the decoder at samples. */
+	uint8_t d[128], *p = d;
+	p = put_iface(p, 0, 0, 0, 0x01, 0x01);
+	p = put_iface(p, 1, 1, 2, 0x01, 0x02);
+	p = put_fmt(p, 2, 2, 16, 44100);
+	p = put_ep(p, 0x01, 0x05, 192, 0, 0);
+	p = put_ep(p, 0x83, 0x21, 192, 0, 0);      /* IN, usage 10 */
+	UAC1Topology t;
+	CHECK_EQ(uac1_parse_config(d, (size_t)(p - d), &t), true);
+	CHECK_EQ(t.alts[t.alt_count - 1].feedback_endpoint, 0);
+}
+
+static void test_bsynchaddress_still_wins(void)
+{
+	/* The OUT endpoint naming its feedback partner via bSynchAddress is the
+	 * common UAC1 shape and must keep working. */
+	uint8_t d[128], *p = d;
+	p = put_iface(p, 0, 0, 0, 0x01, 0x01);
+	p = put_iface(p, 1, 1, 2, 0x01, 0x02);
+	p = put_fmt(p, 2, 2, 16, 44100);
+	p = put_ep(p, 0x01, 0x05, 192, 0, 0x82);
+	p = put_ep(p, 0x82, 0x11, 3, 4, 0);
+	UAC1Topology t;
+	CHECK_EQ(uac1_parse_config(d, (size_t)(p - d), &t), true);
+	CHECK_EQ(t.alts[t.alt_count - 1].feedback_endpoint, 0x82);
+}
+
 int main(void)
 {
 	load_fixture();
@@ -558,6 +661,10 @@ int main(void)
 	test_needs_rate_request();
 	test_parses_without_config_header();
 	test_survives_hostile_input();
+	test_in_data_endpoint_is_not_feedback();
+	test_in_feedback_endpoint_is_recognised();
+	test_implicit_feedback_data_is_not_a_feedback_endpoint();
+	test_bsynchaddress_still_wins();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

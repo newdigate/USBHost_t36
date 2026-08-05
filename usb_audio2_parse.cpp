@@ -11,6 +11,10 @@
 #define SUBCLASS_STREAM    0x02
 #define EP_DIR_MASK        0x80
 #define EP_DIR_OUT         0x00
+// USB 2.0 section 9.6.6 bits 5..4: 01 is an explicit feedback endpoint; 00 is
+// data and 10 is implicit-feedback DATA. See the note in usb_audio_parse.cpp.
+#define EP_USAGE_MASK      0x30
+#define EP_USAGE_FEEDBACK  0x10
 #define EP_XFER_TYPE_MASK  0x03
 #define EP_XFER_ISO        0x01
 
@@ -156,9 +160,11 @@ bool uac2_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out)
 			if (is_out && is_iso) {
 				alt->endpoint_address = b[2];
 				alt->max_packet_size  = (uint16_t)b[4] | ((uint16_t)b[5] << 8);
-			} else if (!is_out && is_iso) {
-				// First IN iso endpoint on the interface wins, and its
-				// wMaxPacketSize rides along for the iTD reader.
+			} else if (!is_out && is_iso
+			           && (b[3] & EP_USAGE_MASK) == EP_USAGE_FEEDBACK) {
+				// First explicit FEEDBACK endpoint wins, and its
+				// wMaxPacketSize rides along for the iTD reader. An IN data
+				// endpoint on the same alt (full duplex) is not this.
 				if (alt->feedback_endpoint == 0) {
 					alt->feedback_endpoint = b[2];
 					alt->feedback_max_packet =

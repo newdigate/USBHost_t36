@@ -641,6 +641,121 @@ static void test_bsynchaddress_still_wins(void)
 	CHECK_EQ(t.alts[t.alt_count - 1].feedback_endpoint, 0x82);
 }
 
+
+// --- input streaming interface ------------------------------------------
+
+static void test_finds_input_interface_on_the_witness(void)
+{
+	// The XMOS UAC1 witness is 2-in/2-out. Its OUT interface also carries an
+	// IN endpoint -- the feedback endpoint, 0x82, which declares usage type
+	// 00 = "data" and is therefore indistinguishable from audio by its own
+	// descriptor. The input interface must be the OTHER one.
+	uint8_t buf[1024];
+	FILE *f = fopen("fixtures/xmos_uac1_async_feedback.bin", "rb");
+	CHECK(f != NULL);
+	size_t len = fread(buf, 1, sizeof(buf), f);
+	fclose(f);
+
+	UAC1Topology t;
+	CHECK(uac1_parse_config(buf, len, &t));
+	// The output side is untouched by any of this.
+	CHECK_EQ(t.alts[1].endpoint_address, 0x01);
+	CHECK_EQ(t.alts[1].feedback_endpoint, 0x82);
+
+	// An input interface exists, is NOT the output one, and its data
+	// endpoint is the IN audio endpoint rather than the feedback endpoint.
+	CHECK(t.input_streaming_interface != 0xFF);
+	CHECK(t.input_streaming_interface != t.streaming_interface);
+	CHECK(t.in_alt_count > 1);
+	const UAC1AltSetting *in = &t.in_alts[t.in_alt_count - 1];
+	CHECK_EQ(in->endpoint_address & 0x80, 0x80);
+	CHECK(in->endpoint_address != 0x82);      // not the feedback endpoint
+	CHECK(in->channels > 0);
+	// 24-bit, where this device's OUTPUT alts are 16-bit. Duplex does not
+	// imply symmetric: the two directions are separate interfaces with
+	// separate format descriptors, and an input path that inherits the
+	// output's format would mis-size every packet it reads.
+	CHECK_EQ(in->bit_resolution, 24);
+}
+
+static void test_output_only_device_reports_no_input(void)
+{
+	// Synthetic: one streaming interface, OUT plus its feedback endpoint.
+	// The feedback endpoint must not be mistaken for an input stream.
+	uint8_t d[128], *p = d;
+	p = put_iface(p, 0, 0, 0, 0x01, 0x01);
+	p = put_iface(p, 1, 1, 2, 0x01, 0x02);
+	p = put_fmt(p, 2, 2, 16, 44100);
+	p = put_ep(p, 0x01, 0x05, 192, 0, 0x82);
+	p = put_ep(p, 0x82, 0x01, 3, 4, 0);        /* usage 00, like the witness */
+	UAC1Topology t;
+	CHECK_EQ(uac1_parse_config(d, (size_t)(p - d), &t), true);
+	CHECK_EQ(t.alts[t.alt_count - 1].feedback_endpoint, 0x82);
+	CHECK_EQ(t.input_streaming_interface, 0xFF);
+	CHECK_EQ(t.in_alt_count, 0);
+}
+
+static void test_finds_in_alt_by_format(void)
+{
+	uint8_t d[192], *p = d;
+	p = put_iface(p, 0, 0, 0, 0x01, 0x01);
+	p = put_iface(p, 1, 1, 1, 0x01, 0x02);     /* OUT interface */
+	p = put_fmt(p, 2, 2, 16, 44100);
+	p = put_ep(p, 0x01, 0x05, 192, 0, 0);
+	p = put_iface(p, 2, 0, 0, 0x01, 0x02);     /* IN interface, alt 0 */
+	p = put_iface(p, 2, 1, 1, 0x01, 0x02);     /* IN interface, alt 1 */
+	p = put_fmt(p, 1, 2, 16, 48000);
+	p = put_ep(p, 0x86, 0x05, 100, 0, 0);
+	UAC1Topology t;
+	CHECK_EQ(uac1_parse_config(d, (size_t)(p - d), &t), true);
+	CHECK_EQ(t.input_streaming_interface, 2);
+	CHECK_EQ(uac1_find_in_alt(&t, 48000, 1, 16), 1);
+	CHECK_EQ(uac1_find_in_alt(&t, 44100, 1, 16), -1);   // wrong rate
+	CHECK_EQ(uac1_find_in_alt(&t, 48000, 2, 16), -1);   // wrong channels
+	// And the output search must not see the input alts.
+	CHECK_EQ(uac1_find_alt(&t, 48000, 1, 16), -1);
+}
+
+
+static void test_real_duplex_dongle(void)
+{
+	// A third-party UAC1 headset adapter, descriptors captured from the
+	// live device on 2026-08-05 via the example's DUMP_CONFIG path. Stereo
+	// out on interface 1, mono mic in on interface 2, plus a HID interface.
+	// It is the first non-XMOS device this parser has been held to.
+	uint8_t buf[1024];
+	FILE *f = fopen("fixtures/dongle_uac1_duplex.bin", "rb");
+	CHECK(f != NULL);
+	size_t len = fread(buf, 1, sizeof(buf), f);
+	fclose(f);
+	CHECK_EQ(len, 244);
+
+	UAC1Topology t;
+	CHECK(uac1_parse_config(buf, len, &t));
+	CHECK_EQ(t.streaming_interface, 1);
+	CHECK_EQ(t.input_streaming_interface, 2);
+
+	// Output: stereo 16-bit, and NO feedback endpoint -- this device
+	// declares bmAttributes 0x01, no synchronisation, and names no
+	// bSynchAddress. Its IN endpoint lives on another interface entirely and
+	// must not be dragged in as feedback.
+	const UAC1AltSetting *o = &t.alts[t.alt_count - 1];
+	CHECK_EQ(o->channels, 2);
+	CHECK_EQ(o->bit_resolution, 16);
+	CHECK_EQ(o->feedback_endpoint, 0);
+
+	// Input: mono 16-bit on 0x86, and asymmetric with the output in channel
+	// count -- as the XMOS witness is asymmetric in bit depth.
+	CHECK_EQ(t.in_alt_count, 2);
+	const UAC1AltSetting *i = &t.in_alts[1];
+	CHECK_EQ(i->endpoint_address, 0x86);
+	CHECK_EQ(i->channels, 1);
+	CHECK_EQ(i->bit_resolution, 16);
+	CHECK_EQ(i->max_packet_size, 100);
+	CHECK_EQ(uac1_find_in_alt(&t, 44100, 1, 16), 1);
+	CHECK_EQ(uac1_find_in_alt(&t, 48000, 1, 16), 1);   // both rates in one alt
+}
+
 int main(void)
 {
 	load_fixture();
@@ -665,6 +780,10 @@ int main(void)
 	test_in_feedback_endpoint_is_recognised();
 	test_implicit_feedback_data_is_not_a_feedback_endpoint();
 	test_bsynchaddress_still_wins();
+	test_finds_input_interface_on_the_witness();
+	test_output_only_device_reports_no_input();
+	test_finds_in_alt_by_format();
+	test_real_duplex_dongle();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

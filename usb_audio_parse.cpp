@@ -56,18 +56,55 @@ static uint8_t find_output_streaming_interface(const uint8_t *d, size_t len)
 	return 0xFF;
 }
 
+// The audio streaming interface carrying audio TO us: one with an isochronous
+// IN endpoint and NO isochronous OUT endpoint. Returns 0xFF if there is none.
+//
+// The "no OUT endpoint" half is what makes this safe. An asynchronous OUT
+// interface also carries an IN endpoint -- its feedback endpoint -- and on the
+// XMOS UAC1 witness that endpoint declares bmAttributes usage type 00,
+// "data", so no property of the endpoint itself distinguishes it from audio.
+// Excluding interfaces that have an OUT endpoint sidesteps the question rather
+// than trusting a field real hardware fills in wrongly.
+static uint8_t find_input_streaming_interface(const uint8_t *d, size_t len)
+{
+	uint8_t cur = 0xFF, best = 0xFF;
+	bool cur_is_stream = false, saw_in = false, saw_out = false;
+	size_t i = 0;
+	while (i + 1 < len && d[i] >= 2 && i + d[i] <= len) {
+		uint8_t l = d[i], t = d[i + 1];
+		if (t == DT_INTERFACE && l >= 9) {
+			if (cur_is_stream && saw_in && !saw_out && best == 0xFF) best = cur;
+			cur_is_stream = (d[i+5] == AUDIO_CLASS && d[i+6] == SUBCLASS_STREAM);
+			cur = d[i+2];
+			saw_in = saw_out = false;
+		} else if (t == DT_ENDPOINT && l >= 7 && cur_is_stream) {
+			if ((d[i+3] & EP_XFER_TYPE_MASK) == EP_XFER_ISO) {
+				if ((d[i+2] & EP_DIR_MASK) == EP_DIR_OUT) saw_out = true;
+				else saw_in = true;
+			}
+		}
+		i += l;
+	}
+	if (cur_is_stream && saw_in && !saw_out && best == 0xFF) best = cur;
+	return best;
+}
+
 bool uac1_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out)
 {
 	if (!desc || !out || len < 9) return false;
 	memset(out, 0, sizeof(*out));
 	out->control_interface = 0xFF;
 	out->streaming_interface = 0xFF;
+	out->input_streaming_interface = 0xFF;
+	out->in_alt_count = 0;
 
 	uint8_t stream_if = find_output_streaming_interface(desc, len);
+	uint8_t in_if = find_input_streaming_interface(desc, len);
+	out->input_streaming_interface = in_if;
 	if (stream_if == 0xFF) return false;
 	out->streaming_interface = stream_if;
 
-	bool in_control = false, in_stream = false;
+	bool in_control = false, in_stream = false, is_in_stream = false;
 	UAC1AltSetting *alt = 0;
 	uint8_t fu_ids[UAC1_MAX_ALTS];
 	uint8_t fu_count = 0;
@@ -80,11 +117,20 @@ bool uac1_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out)
 			in_control = (b[5] == AUDIO_CLASS && b[6] == SUBCLASS_CONTROL);
 			in_stream  = (b[5] == AUDIO_CLASS && b[6] == SUBCLASS_STREAM
 			              && b[2] == stream_if);
+			is_in_stream = (b[5] == AUDIO_CLASS && b[6] == SUBCLASS_STREAM
+			                && in_if != 0xFF && b[2] == in_if);
 			alt = 0;
 			if (in_control && out->control_interface == 0xFF)
 				out->control_interface = b[2];
 			if (in_stream && out->alt_count < UAC1_MAX_ALTS) {
 				alt = &out->alts[out->alt_count++];
+				memset(alt, 0, sizeof(*alt));
+				alt->alternate_setting = b[3];
+			} else if (is_in_stream && out->in_alt_count < UAC1_MAX_ALTS) {
+				// Input alts are filled by the same descriptor handlers
+				// below; only the array differs. in_stream stays false, so
+				// nothing that means "output" starts meaning both.
+				alt = &out->in_alts[out->in_alt_count++];
 				memset(alt, 0, sizeof(*alt));
 				alt->alternate_setting = b[3];
 			}
@@ -99,7 +145,7 @@ bool uac1_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out)
 				// 1..255); reject it here so it can never be confused with
 				// the feature_unit_id "not found" sentinel below.
 				if (fu_count < UAC1_MAX_ALTS && b[3] != 0) fu_ids[fu_count++] = b[3];
-			} else if (in_stream && alt && b[2] == AS_FORMAT_TYPE && l >= 11) {
+			} else if (alt && b[2] == AS_FORMAT_TYPE && l >= 11) {
 				alt->channels       = b[4];
 				alt->subframe_size  = b[5];
 				alt->bit_resolution = b[6];
@@ -126,10 +172,10 @@ bool uac1_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out)
 					}
 				}
 			}
-		} else if (t == DT_CS_ENDPOINT && l >= 4 && in_stream && alt
+		} else if (t == DT_CS_ENDPOINT && l >= 4 && alt
 		           && b[2] == AS_EP_GENERAL) {
 			alt->ep_controls = b[3];
-		} else if (t == DT_ENDPOINT && l >= 7 && in_stream && alt) {
+		} else if (t == DT_ENDPOINT && l >= 7 && alt) {
 			bool is_out = (b[2] & EP_DIR_MASK) == EP_DIR_OUT;
 			bool is_iso = (b[3] & EP_XFER_TYPE_MASK) == EP_XFER_ISO;
 			if (is_out && is_iso) {
@@ -143,6 +189,14 @@ bool uac1_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out)
 				// bLength 9 is the audio endpoint descriptor, which adds
 				// bRefresh and bSynchAddress. Zero means no feedback endpoint.
 				if (l >= 9 && b[8] != 0) alt->feedback_endpoint = b[8];
+			} else if (!is_out && is_iso && is_in_stream) {
+				// On the INPUT interface an IN isochronous endpoint is the
+				// audio data endpoint, not feedback. An input stream has no
+				// feedback endpoint at all: the device is the source and
+				// sets the rate, so it has nothing to report back.
+				alt->endpoint_address    = b[2];
+				alt->endpoint_attributes = b[3];
+				alt->max_packet_size     = (uint16_t)b[4] | ((uint16_t)b[5] << 8);
 			} else if (!is_out && is_iso) {
 				// Two ways to be the feedback endpoint, and BOTH are needed.
 				//
@@ -206,6 +260,20 @@ bool uac1_alt_needs_rate_request(const UAC1AltSetting *alt)
 	if (!(alt->ep_controls & 0x01)) return false;
 	// A single discrete rate is already fully determined by the alt setting.
 	return alt->rate_count != 1;
+}
+
+int uac1_find_in_alt(const UAC1Topology *t, uint32_t rate, uint8_t channels, uint8_t bits)
+{
+	if (!t) return -1;
+	for (uint8_t k = 0; k < t->in_alt_count; k++) {
+		const UAC1AltSetting *a = &t->in_alts[k];
+		if (a->endpoint_address == 0) continue;      // zero-bandwidth alt 0
+		if (a->channels != channels) continue;
+		if (a->bit_resolution != bits) continue;
+		if (!uac1_alt_supports_rate(a, rate)) continue;
+		return (int)a->alternate_setting;
+	}
+	return -1;
 }
 
 int uac1_find_alt(const UAC1Topology *t, uint32_t rate, uint8_t channels, uint8_t bits)

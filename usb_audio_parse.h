@@ -67,7 +67,21 @@ bool uac1_alt_needs_rate_request(const UAC1AltSetting *alt);
 struct UAC1Topology {
 	uint16_t bcd_adc;
 	uint8_t  control_interface;    // 0xFF if none
-	uint8_t  streaming_interface;  // 0xFF if none
+	uint8_t  streaming_interface;  // OUT; 0xFF if none
+	// The INPUT streaming interface -- the one carrying audio from the
+	// device to us -- and its alternate settings, parsed into a parallel
+	// array so nothing about the output path changes shape.
+	//
+	// An input interface is identified as one with an isochronous IN
+	// endpoint and NO isochronous OUT endpoint. The absence test is the
+	// load-bearing half: an asynchronous OUT interface also carries an IN
+	// endpoint (its feedback endpoint), and on the XMOS UAC1 witness that
+	// endpoint declares usage type 00 = "data", so it is indistinguishable
+	// from audio by its own descriptor. Requiring the interface to have no
+	// OUT endpoint excludes it cleanly and without trusting usage bits.
+	uint8_t  input_streaming_interface;   // 0xFF if none
+	uint8_t  in_alt_count;
+	UAC1AltSetting in_alts[UAC1_MAX_ALTS];
 	uint8_t  feature_unit_id;      // 0 if none
 	// UAC2 only: the RESOLVED Clock Source entity (single-input selectors
 	// followed through); 0 for UAC1 or when unresolved.
@@ -81,13 +95,21 @@ struct UAC1Topology {
 };
 
 // Parses a full configuration descriptor. Returns false if the descriptor
-// contains no audio streaming interface with an isochronous OUT endpoint.
+// contains no audio streaming interface with an isochronous OUT endpoint --
+// the return value still speaks only for the OUTPUT path, so an input-only
+// device parses as a failure today. Input fields are filled opportunistically
+// whenever an input interface is present.
 // On failure the contents of *out are unspecified and callers must not
 // read it.
 bool uac1_parse_config(const uint8_t *desc, size_t len, UAC1Topology *out);
 
 // Returns the alternate setting number matching the format, or -1.
 int uac1_find_alt(const UAC1Topology *t, uint32_t rate, uint8_t channels, uint8_t bits);
+
+// Same, over the INPUT alternate settings. Separate from uac1_find_alt rather
+// than a direction flag on it, because every existing caller means "output"
+// and a defaulted flag is how that silently stops being true.
+int uac1_find_in_alt(const UAC1Topology *t, uint32_t rate, uint8_t channels, uint8_t bits);
 
 // Bytes to send in the next 1 ms USB frame for a given sample rate.
 //

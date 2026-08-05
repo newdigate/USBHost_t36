@@ -164,9 +164,82 @@ static void test_pattern(void)
 	CHECK_EQ(uacv_pack_pattern(dst, 1, 2, 4, &lfsr, NULL), 0);
 }
 
+static void test_unpack(void)
+{
+	// One MC200 capture frame: 8 channels of 24-in-4. Hand-built rather
+	// than round-tripped, so the byte order is asserted against the layout
+	// and not merely against uac_pack16 agreeing with itself.
+	uint8_t src[64];
+	for (int c = 0; c < 8; c++) {
+		src[c*4 + 0] = 0xAA;                    // pad, must be ignored
+		src[c*4 + 1] = (uint8_t)(0x10 + c);     // low 8 of the 24, dropped
+		src[c*4 + 2] = (uint8_t)(0x20 + c);     // -> int16 low byte
+		src[c*4 + 3] = (uint8_t)(0x30 + c);     // -> int16 high byte
+	}
+	int16_t dst[16];
+	CHECK_EQ(uac_unpack16(dst, src, 1, 8, 8, 4), 8);
+	for (int c = 0; c < 8; c++)
+		CHECK_EQ((uint16_t)dst[c], (uint16_t)(0x3020 + c * 0x0101));
+
+	// Taking fewer channels than the device sends must SKIP the rest, not
+	// read them contiguously: channel 1 of frame 0 is at byte 4, and the
+	// second frame starts at byte 32 -- not byte 8.
+	uint8_t two[64];
+	for (int f = 0; f < 2; f++)
+		for (int c = 0; c < 8; c++) {
+			two[f*32 + c*4 + 0] = 0; two[f*32 + c*4 + 1] = 0;
+			two[f*32 + c*4 + 2] = (uint8_t)(f * 16 + c);
+			two[f*32 + c*4 + 3] = 0;
+		}
+	int16_t st[4];
+	CHECK_EQ(uac_unpack16(st, two, 2, 2, 8, 4), 4);
+	CHECK_EQ(st[0], 0); CHECK_EQ(st[1], 1);     // frame 0, channels 0..1
+	CHECK_EQ(st[2], 16); CHECK_EQ(st[3], 17);   // frame 1 -- 32 bytes on
+
+	// 16-in-2 is verbatim little-endian; the negative value pins the sign.
+	uint8_t s2[4] = {0xDC, 0xFE, 0x34, 0x12};
+	int16_t d2[2];
+	CHECK_EQ(uac_unpack16(d2, s2, 1, 2, 2, 2), 2);
+	CHECK_EQ((uint16_t)d2[0], 0xFEDC);
+	CHECK_EQ((uint16_t)d2[1], 0x1234);
+
+	// 24-in-3: the pad is at the low end, so the top two bytes are 1 and 2.
+	uint8_t s3[3] = {0x99, 0xDC, 0xFE};
+	int16_t d3[1];
+	CHECK_EQ(uac_unpack16(d3, s3, 1, 1, 1, 3), 1);
+	CHECK_EQ((uint16_t)d3[0], 0xFEDC);
+
+	// Round trip through uac_pack16 for every subslot the device may use.
+	// Exact in this direction (pack zeroes the bits unpack drops); the
+	// reverse is not, which is why it is not asserted.
+	const int16_t want[6] = {0x1234, (int16_t)0xFEDC, 0x7FFF,
+	                         (int16_t)0x8000, 0x0001, (int16_t)0xFFFF};
+	for (uint8_t subslot = 2; subslot <= 4; subslot++) {
+		uint8_t packed[8 * 4 * 3];
+		int16_t back[6];
+		CHECK_EQ(uac_pack16(packed, want, 3, 2, 2, subslot), 3u * 2 * subslot);
+		CHECK_EQ(uac_unpack16(back, packed, 3, 2, 2, subslot), 6);
+		for (int i = 0; i < 6; i++) CHECK_EQ(back[i], want[i]);
+	}
+
+	// Guards. ch_want > ch_total refuses rather than zero-filling: a device
+	// sending fewer channels than negotiated is a broken negotiation, and
+	// silence in the extra channels would make it look like working audio.
+	int16_t d[8];
+	uint8_t s[64] = {0};
+	CHECK_EQ(uac_unpack16(d, s, 1, 3, 2, 4), 0);
+	CHECK_EQ(uac_unpack16(d, s, 1, 2, 0, 4), 0);
+	CHECK_EQ(uac_unpack16(d, s, 1, 2, 2, 1), 0);
+	CHECK_EQ(uac_unpack16(d, s, 1, 2, 2, 5), 0);
+	CHECK_EQ(uac_unpack16(NULL, s, 1, 2, 2, 4), 0);
+	CHECK_EQ(uac_unpack16(d, NULL, 1, 2, 2, 4), 0);
+	CHECK_EQ(uac_unpack16(d, s, 0, 2, 2, 4), 0);   // no frames, no samples
+}
+
 int main(void)
 {
 	test_pack();
+	test_unpack();
 	test_pattern();
 	if (failures == 0) { printf("test_pack: all %d checks passed\n", checks); return 0; }
 	printf("test_pack: %d/%d FAILED\n", failures, checks);

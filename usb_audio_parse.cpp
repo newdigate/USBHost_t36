@@ -344,6 +344,25 @@ uint32_t uac_pack16(uint8_t *dst, const int16_t *src, uint32_t frames,
 	return (uint32_t)(p - dst);
 }
 
+uint32_t uac_unpack16(int16_t *dst, const uint8_t *src, uint32_t frames,
+                      uint8_t ch_want, uint8_t ch_total, uint8_t subslot)
+{
+	if (!dst || !src || subslot < 2 || subslot > 4) return 0;
+	if (ch_total == 0 || ch_want > ch_total) return 0;
+	int16_t *p = dst;
+	// The two most significant bytes of a left-justified subslot are always
+	// the last two, whatever the padding before them.
+	const uint8_t skip = (uint8_t)(subslot - 2);
+	for (uint32_t f = 0; f < frames; f++) {
+		const uint8_t *frame = src + (size_t)f * ch_total * subslot;
+		for (uint8_t c = 0; c < ch_want; c++) {
+			const uint8_t *s = frame + (size_t)c * subslot + skip;
+			*p++ = (int16_t)((uint16_t)s[0] | ((uint16_t)s[1] << 8));
+		}
+	}
+	return (uint32_t)(p - dst);
+}
+
 uint32_t uacv_pack_pattern(uint8_t *dst, uint32_t frames, uint8_t ch_total,
                            uint8_t subslot, uint32_t *lfsr, bool *primed)
 {

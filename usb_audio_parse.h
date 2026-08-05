@@ -214,6 +214,27 @@ bool uac_stream_config_equal(const UACStreamConfig *a, const UACStreamConfig *b)
 uint32_t uac_pack16(uint8_t *dst, const int16_t *src, uint32_t frames,
                     uint8_t ch_live, uint8_t ch_total, uint8_t subslot);
 
+// The inverse, for the input direction: read `frames` device frames of
+// ch_total x subslot bytes and emit the first ch_want channels of each as
+// interleaved int16.
+//
+// Left-justification is what makes one expression serve all three subslot
+// sizes: the sample's most significant 16 bits are always the LAST two bytes
+// of the subslot (little-endian), whatever the padding at the other end. So
+// 16-in-2 is verbatim, and 24-in-3 and 24-in-4 both truncate to their top 16
+// bits -- which is a real loss of 8 bits, not a repacking. A caller that
+// wants the device's full 24 bits needs a different function; this one exists
+// because the FIFO between the ring and the audio graph is int16.
+//
+// Channels beyond ch_want are read past and discarded rather than
+// interleaved. Returns int16 samples written (frames * ch_want); 0 for null
+// pointers, unsupported subslot sizes, ch_total 0, or ch_want > ch_total --
+// deliberately NOT zero-filling missing channels, because a device that sends
+// fewer channels than asked for is a negotiation error, not something to
+// paper over with silence. Mono-to-stereo is the caller's policy.
+uint32_t uac_unpack16(int16_t *dst, const uint8_t *src, uint32_t frames,
+                      uint8_t ch_want, uint8_t ch_total, uint8_t subslot);
+
 // Cooperative-mode test pattern for the UAC host validator's R7 rule. Fills
 // `frames` frames of ch_total x subslot bytes with the validator's Galois
 // LFSR sequence -- one fresh value per SAMPLE across all channels, because

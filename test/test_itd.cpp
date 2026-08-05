@@ -428,6 +428,85 @@ static void test_fill_in_rejects(void)
 	CHECK_EQ(itd_fill_in(&n, 9, 2, buf, 1, 1, false), true);
 }
 
+// The capture ring's fill: all eight microframes, fixed stride.
+static void test_fill_in_frame(void)
+{
+	// 224 is the ring's per-microframe ceiling; 8 * 224 = 1792 straddles a
+	// 4K page from a non-zero offset, which is what exercises the PG field.
+	static uint8_t buf[8 * 224] __attribute__ ((aligned(4)));
+	itd_t n;
+	memset(&n, 0xA5, sizeof(n));   // recycled nodes arrive dirty
+
+	CHECK_EQ(itd_fill_in_frame(&n, 9, 1, buf, 224, 192, false), true);
+
+	uint32_t base = (uint32_t)(uintptr_t)buf;
+	uint32_t page0 = base & 0xFFFFF000u;
+
+	// Every microframe armed, each pointing at its OWN slice. This is the
+	// property that separates an IN fill from an OUT one: the slices cannot
+	// abut, because how much of each the device fills is not known until
+	// the controller writes the count back.
+	for (int k = 0; k < 8; k++) {
+		uint32_t off = (base & 0xFFFu) + (uint32_t)k * 224u;
+		CHECK_EQ(n.transaction[k],
+		         ITD_TXN_ACTIVE | (224u << ITD_TXN_LENGTH_SHIFT)
+		         | ((off >> 12) << ITD_TXN_PG_SHIFT)
+		         | (off & ITD_TXN_OFFSET_MASK));
+		// The recovered absolute address must land exactly `stride` on
+		// from its predecessor -- the check that actually catches an
+		// off-by-a-page in the PG/offset split.
+		uint32_t pg = (n.transaction[k] >> ITD_TXN_PG_SHIFT) & 7u;
+		uint32_t o  = n.transaction[k] & ITD_TXN_OFFSET_MASK;
+		CHECK_EQ(page0 + pg * 4096u + o, base + (uint32_t)k * 224u);
+	}
+
+	CHECK_EQ(n.bufptr[0], page0 | (1u << 8) | 9u);
+	CHECK_EQ(n.bufptr[1], (page0 + 4096u) | ITD_BUFPTR1_DIR_IN | 192u);
+	CHECK_EQ(n.bufptr[2], (page0 + 8192u) | 1u);
+
+	// IOC, when asked, goes on microframe 7 and nowhere else.
+	CHECK_EQ(itd_fill_in_frame(&n, 9, 1, buf, 224, 192, true), true);
+	for (int k = 0; k < 7; k++) CHECK_EQ(n.transaction[k] & ITD_TXN_IOC, 0u);
+	CHECK_EQ(n.transaction[7] & ITD_TXN_IOC, ITD_TXN_IOC);
+
+	// An OUT fill of the same node must clear the direction bit: the two
+	// fills share a pool, and a stale IN bit would turn audio into a read.
+	uint16_t lens[8] = { 192, 192, 192, 192, 192, 192, 192, 192 };
+	CHECK_EQ(itd_fill_out(&n, 9, 1, buf, lens, 192, false), true);
+	CHECK_EQ(n.bufptr[1] & ITD_BUFPTR1_DIR_IN, 0u);
+
+	// Rejections leave the descriptor untouched.
+	itd_t before;
+	memset(&n, 0xA5, sizeof(n));
+	memcpy(&before, &n, sizeof(n));
+	CHECK_EQ(itd_fill_in_frame(0, 9, 1, buf, 224, 192, false), false);
+	CHECK_EQ(itd_fill_in_frame(&n, 9, 1, 0, 224, 192, false), false);
+	CHECK_EQ(itd_fill_in_frame(&n, 9, 1, buf, 0, 192, false), false);
+	CHECK_EQ(itd_fill_in_frame(&n, 9, 1, buf, 1025, 192, false), false);
+	CHECK_EQ(itd_fill_in_frame(&n, 9, 1, buf, 224, 0, false), false);
+	CHECK_EQ(itd_fill_in_frame(&n, 9, 1, buf, 224, 1025, false), false);
+	// stride below max_packet: a legal packet would be truncated, which the
+	// controller reports as babble rather than as the lost audio it is.
+	CHECK_EQ(itd_fill_in_frame(&n, 9, 1, buf, 191, 192, false), false);
+	CHECK_EQ(itd_fill_in_frame(&n, 9, 16, buf, 224, 192, false), false);
+	CHECK_EQ(itd_fill_in_frame(&n, 128, 1, buf, 224, 192, false), false);
+	CHECK_EQ(memcmp(&n, &before, sizeof(n)), 0);
+
+	// Boundaries the guards must NOT reject.
+	memset(&n, 0, sizeof(n));
+	CHECK_EQ(itd_fill_in_frame(&n, 127, 15, buf, 1024, 1024, false), true);
+	CHECK_EQ(itd_fill_in_frame(&n, 9, 1, buf, 192, 192, false), true);
+	CHECK_EQ(itd_fill_in_frame(&n, 9, 1, buf, 1, 1, false), true);
+
+	// Eight slices of 1024 span 8192 bytes -- three pages from any offset,
+	// well inside the seven available, so no offset can trip the page
+	// guard. Walk one full page of starting offsets to prove it.
+	static uint8_t big[8 * 1024 + 4096] __attribute__ ((aligned(4096)));
+	for (uint32_t o = 0; o < 4096; o += 64) {
+		CHECK_EQ(itd_fill_in_frame(&n, 9, 1, big + o, 1024, 1024, false), true);
+	}
+}
+
 static void test_disarm(void)
 {
 	// A recycled node carries its previous life's ACTIVE bits: alloc does
@@ -458,6 +537,7 @@ int main(void)
 	test_mixed_run_guard();
 	test_fill_in();
 	test_fill_in_rejects();
+	test_fill_in_frame();
 	test_fill_out_refill_leaves_nothing_stale();
 	test_fill_in_refill_leaves_nothing_stale();
 	test_fill_out_untouched_on_rejection();

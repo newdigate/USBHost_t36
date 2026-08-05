@@ -180,6 +180,36 @@ bool itd_fill_out(itd_t *node, uint8_t dev_addr, uint8_t endpoint,
 bool itd_fill_in(itd_t *node, uint8_t dev_addr, uint8_t endpoint,
                  void *buf, uint16_t len, uint16_t max_packet, bool ioc);
 
+// Fill an iTD for a whole frame of high-speed isochronous IN: all eight
+// microframe transactions, each reading up to `stride` bytes into its own
+// slice of `buf` (DMA-reachable) at offset k*stride. This is the audio
+// capture ring's fill; itd_fill_in above arms microframe 0 alone and serves
+// the feedback reader, which polls once per frame.
+//
+// FIXED STRIDE, not the contiguous packing itd_fill_out uses, and the
+// difference is forced rather than stylistic: an OUT transaction's length is
+// known when the descriptor is built, so its payloads can abut. An IN
+// transaction's length is whatever the device chooses to send, written back
+// by the controller afterwards (EHCI 1.0 Table 3-3) -- so with contiguous
+// packing the start of microframe k+1 would depend on a count that does not
+// exist yet. Each microframe therefore needs its own slot, and the harvest
+// reads .length to learn how much of each slot is real.
+//
+// `max_packet` should be what the NEGOTIATED format can produce in one
+// microframe, not the endpoint's advertised ceiling -- the MC200 advertises
+// 800 (sized for 192 kHz) and sends at most 192 at 44.1 kHz. Programming the
+// smaller value turns "device sent more than its own format allows" into a
+// reported babble rather than a silent overrun, the same reasoning the OUT
+// ring's alt_mps_hs already follows.
+//
+// Returns false (descriptor untouched) on nulls, stride 0 or > 1024,
+// max_packet 0 or > 1024, stride < max_packet (which would truncate a legal
+// packet), endpoint > 15, device address > 127, or a buffer whose 8*stride
+// span would need more than seven pages.
+bool itd_fill_in_frame(itd_t *node, uint8_t dev_addr, uint8_t endpoint,
+                       void *buf, uint16_t stride, uint16_t max_packet,
+                       bool ioc_last);
+
 // Link an siTD into one periodic frame list slot, at the head of that frame's
 // list. `frame_slot` is &periodictable[frame]; the caller owns the table.
 //

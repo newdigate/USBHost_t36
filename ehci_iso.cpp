@@ -321,6 +321,47 @@ bool itd_fill_in(itd_t *node, uint8_t dev_addr, uint8_t endpoint,
 	return true;
 }
 
+bool itd_fill_in_frame(itd_t *node, uint8_t dev_addr, uint8_t endpoint,
+                       void *buf, uint16_t stride, uint16_t max_packet,
+                       bool ioc_last)
+{
+	if (!node || !buf) return false;
+	if (max_packet == 0 || max_packet > 1024) return false;
+	// stride below max_packet would silently truncate a packet the device
+	// is entitled to send; above 1024 there is nothing to read into it.
+	if (stride == 0 || stride > 1024 || stride < max_packet) return false;
+	if (endpoint > 15 || dev_addr > 127) return false;
+
+	uint32_t base = (uint32_t)(uintptr_t)buf;
+	uint32_t page0 = base & 0xFFFFF000u;
+
+	uint32_t off = base & 0xFFFu;
+	uint32_t txn[8];
+	for (int k = 0; k < 8; k++) {
+		uint32_t pg = off >> 12;
+		if (pg > 6) return false;   // 8 * stride outran the seven pages
+		txn[k] = ITD_TXN_ACTIVE
+		       | ((uint32_t)stride << ITD_TXN_LENGTH_SHIFT)
+		       | (pg << ITD_TXN_PG_SHIFT)
+		       | (off & ITD_TXN_OFFSET_MASK);
+		off += stride;
+	}
+	if (ioc_last) txn[7] |= ITD_TXN_IOC;
+
+	// Buffer state first, ACTIVE last (see iso_publish_barrier). Same page
+	// derivation as the OUT fill; the direction bit in bufptr[1] is the
+	// only structural difference, and it is what makes these transactions
+	// IN tokens.
+	for (int i = 0; i < 7; i++) node->bufptr[i] = page0 + (uint32_t)i * 4096u;
+	node->bufptr[0] |= ((uint32_t)endpoint << 8) | dev_addr;
+	node->bufptr[1] |= ITD_BUFPTR1_DIR_IN | max_packet;
+	node->bufptr[2] |= 1u;              // Multi = 1
+
+	iso_publish_barrier();
+	for (int k = 0; k < 8; k++) node->transaction[k] = txn[k];
+	return true;
+}
+
 void itd_get_txn_status(const itd_t *node, unsigned txn, itd_txn_status_t *out)
 {
 	if (!out) return;

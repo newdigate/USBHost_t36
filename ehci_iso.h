@@ -118,6 +118,16 @@ void sitd_free(sitd_t *node);
 // Fixed-capacity pool of iTDs, same conventions as the siTD pool above:
 // DMA-reachable backing, (re)init before use, alloc returns NULL when
 // exhausted, free requires the node be unlinked from the schedule.
+// Pool sizes, exported so tests assert against the DEFINITION rather than a
+// copy of it. test_itd carried a literal 64 and an 80-entry array; growing the
+// pool for Stage C's third ring broke the test in a way that said "got 80,
+// want 64" -- a number that was neither the old size nor the new one, because
+// the array bound truncated the count before the assertion saw it. A test that
+// has to be edited in lockstep with a constant will eventually be edited
+// wrongly, or not at all.
+#define EHCI_SITD_POOL_SIZE 40
+#define EHCI_ITD_POOL_SIZE  96
+
 void itd_pool_init(void);
 itd_t *itd_alloc(void);
 void itd_free(itd_t *node);

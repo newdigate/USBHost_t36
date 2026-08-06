@@ -75,16 +75,24 @@ bool sitd_budget_in(uint16_t max_packet, uint8_t start_uframe,
 // beginStreaming() would drain the pool to exactly zero and the feedback
 // pipe could never be armed. Also the bound on how many isochronous
 // descriptors one frame can hold (see sitd_skip_iso).
-#define SITD_POOL_SIZE 40
+#define SITD_POOL_SIZE EHCI_SITD_POOL_SIZE
 // The HS ring plus a full-rate feedback reader: 32 periodic OUT slots and
 // 32 feedback IN slots, one per frame. Full-rate polling is not a luxury --
 // subsampling the device's 1000/s reports aliases their dither duty into a
 // slowly wandering rate estimate the FIFO then integrates (measured at
 // 250 polls/s: >10 s fill drift predicted from the sampled reports with
 // correlation +0.91, and no filter horizon fixes it; see the evkb repo's
-// transcript_uacv_servo_isolation.txt). Arming a stream drains this pool
-// to exactly zero by design.
-#define ITD_POOL_SIZE  64
+// transcript_uacv_servo_isolation.txt).
+//
+// Stage C (duplex) adds the third ring: 32 OUT + 32 feedback + 32 IN. Until
+// then 64 was drained to exactly zero by design, and that exactness is why
+// the number had to move rather than be squeezed -- the alternative on the
+// table was reclaiming 24 descriptors by dropping feedback to 8 slots, which
+// the A/B measured as costing about 30 B of envelope (296 B at 250 polls/s
+// against 268 B at 1000). Paying ~3 KB of DMAMEM instead of 30 B of jitter is
+// the right trade while DMAMEM is not tight; the payload rings dwarf this
+// anyway and are already allocated whether or not both directions stream.
+#define ITD_POOL_SIZE  EHCI_ITD_POOL_SIZE
 
 // Any iso descriptor from either pool can legally occupy a frame's iso
 // run, so every bounded walker over that run must tolerate the combined

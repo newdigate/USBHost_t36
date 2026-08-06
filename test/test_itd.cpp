@@ -31,17 +31,24 @@ static void test_itd_layout(void)
 static void test_itd_pool(void)
 {
 	itd_pool_init();
-	itd_t *seen[80];
+	// Sized from the definition, with room to overrun it: a bound EQUAL to the
+	// pool cannot tell "exactly full" from "did not stop", and a bound BELOW
+	// it truncates the count before the assertion sees it. That is what the
+	// old literal 80 against a literal 64 did when the pool grew to 96 -- the
+	// failure read "got 80, want 64", a number that was neither size.
+	static const int CAP = EHCI_ITD_POOL_SIZE + 8;
+	itd_t *seen[EHCI_ITD_POOL_SIZE + 8];
 	int n = 0;
 	itd_t *node;
-	while (n < 80 && (node = itd_alloc()) != NULL) {
+	while (n < CAP && (node = itd_alloc()) != NULL) {
 		CHECK_EQ(((uintptr_t)node) % 32, 0);
 		for (int i = 0; i < n; i++) CHECK_EQ(node == seen[i], false);
 		seen[n++] = node;
 	}
-	// 32-slot OUT ring + 32-slot full-rate feedback reader, drained to
-	// exactly zero at arm time by design (see ITD_POOL_SIZE).
-	CHECK_EQ(n, 64);
+	// 32-slot OUT ring + 32-slot full-rate feedback reader + 32-slot IN ring
+	// for duplex (Stage C), drained to exactly zero at arm time by design.
+	CHECK_EQ(n, EHCI_ITD_POOL_SIZE);
+	CHECK_EQ(n < CAP, 1);    // it stopped because the pool ran out, not the array
 	CHECK_EQ((void *)itd_alloc(), (void *)0);
 	itd_free(seen[0]);
 	CHECK_EQ((void *)itd_alloc(), (void *)seen[0]);

@@ -383,9 +383,395 @@ static void test_feedback_mps_high_byte(void)
 	CHECK_EQ(t.alts[2].feedback_max_packet, 772);
 }
 
+// --- P2: rejection taxonomy ------------------------------------------------
+//
+// Built by MUTATING the real captured descriptor set rather than hand-rolling
+// byte arrays. A hand-built set proves the parser rejects something the parser
+// author invented; a one-field mutation of a device that genuinely works
+// proves the rejection fires on the field under test and nothing else, because
+// every other byte is known-good and known-accepted.
+static uint8_t mut[4096];
+static size_t  mut_len;
+
+static void mutate_reset(void)
+{
+	memcpy(mut, fixture, fixture_len);
+	mut_len = fixture_len;
+}
+
+// Offset of the first CS_INTERFACE (0x24) descriptor carrying `subtype`, or
+// -1. Located by walking, not by a baked-in constant, so re-capturing the
+// fixture cannot silently point these tests at the wrong byte.
+static long find_cs_iface(uint8_t subtype)
+{
+	size_t i = 0;
+	while (i + 1 < mut_len && mut[i] >= 2 && i + mut[i] <= mut_len) {
+		if (mut[i + 1] == 0x24 && mut[i] >= 3 && mut[i + 2] == subtype)
+			return (long)i;
+		i += mut[i];
+	}
+	return -1;
+}
+
+static void test_rejection_taxonomy(void)
+{
+	UAC1Topology t;
+
+	// The unmutated fixture is the control: if this ever stops being OK,
+	// every rejection below is measuring the wrong thing.
+	mutate_reset();
+	CHECK_EQ(uac2_parse_config_ex(mut, mut_len, &t), UAC2_PARSE_OK);
+
+	// Bad arguments, each of the three ways.
+	CHECK_EQ(uac2_parse_config_ex(0, fixture_len, &t), UAC2_REJECT_BAD_ARGS);
+	CHECK_EQ(uac2_parse_config_ex(fixture, fixture_len, 0), UAC2_REJECT_BAD_ARGS);
+	CHECK_EQ(uac2_parse_config_ex(fixture, 4, &t), UAC2_REJECT_BAD_ARGS);
+
+	// No AS interface owning an iso OUT endpoint: junk that is long enough
+	// to pass the length gate but contains no audio function at all.
+	uint8_t junk[64];
+	memset(junk, 0x11, sizeof(junk));
+	junk[0] = 9; junk[1] = 0x04;   // an interface descriptor of some other class
+	CHECK_EQ(uac2_parse_config_ex(junk, sizeof(junk), &t),
+	         UAC2_REJECT_NO_OUT_STREAM);
+
+	// AC HEADER present but not UAC2. bcdADC sits at b[3..4] of the header.
+	mutate_reset();
+	long h = find_cs_iface(0x01);        // AC_HEADER
+	CHECK(h >= 0);
+	mut[h + 3] = 0x00; mut[h + 4] = 0x01;             // bcdADC 0x0100 = UAC1
+	CHECK_EQ(uac2_parse_config_ex(mut, mut_len, &t), UAC2_REJECT_NOT_UAC2);
+
+	// No AC HEADER at all -- a different verdict from "declares UAC1", which
+	// is the split this taxonomy exists to make. Renumber the subtype so the
+	// descriptor is still well formed and still walked over.
+	mutate_reset();
+	h = find_cs_iface(0x01);
+	CHECK(h >= 0);
+	mut[h + 2] = 0x7F;                                // not a subtype we know
+	CHECK_EQ(uac2_parse_config_ex(mut, mut_len, &t), UAC2_REJECT_NO_AC_HEADER);
+
+	// No AS_GENERAL naming a terminal to clock.
+	mutate_reset();
+	long g = find_cs_iface(0x01);        // AS_GENERAL shares subtype 0x01...
+	// ...so find it on the STREAMING side: the last 0x24/0x01 in the set is
+	// an AS_GENERAL, the first is the AC HEADER. Walk to the last.
+	{
+		size_t i = 0; long last = -1;
+		while (i + 1 < mut_len && mut[i] >= 2 && i + mut[i] <= mut_len) {
+			if (mut[i + 1] == 0x24 && mut[i] >= 3 && mut[i + 2] == 0x01)
+				last = (long)i;
+			i += mut[i];
+		}
+		g = last;
+	}
+	CHECK(g > h);                        // sanity: streaming side is later
+	{
+		// Blank every AS_GENERAL, not just the last: any one of them would
+		// otherwise supply the terminal link.
+		size_t i = 0;
+		while (i + 1 < mut_len && mut[i] >= 2 && i + mut[i] <= mut_len) {
+			if (mut[i + 1] == 0x24 && mut[i] >= 3 && mut[i + 2] == 0x01
+			    && (long)i != h)
+				mut[i + 2] = 0x7E;
+			i += mut[i];
+		}
+	}
+	CHECK_EQ(uac2_parse_config_ex(mut, mut_len, &t),
+	         UAC2_REJECT_NO_TERMINAL_LINK);
+
+	// Clock chain that leads nowhere: keep the terminal link, break the
+	// CLOCK_SOURCE's own entity id so nothing the chain reaches is a source.
+	mutate_reset();
+	long cs = find_cs_iface(0x0A);       // AC_CLOCK_SOURCE
+	CHECK(cs >= 0);
+	mut[cs + 3] = 0x77;                  // an id nothing points at
+	CHECK_EQ(uac2_parse_config_ex(mut, mut_len, &t),
+	         UAC2_REJECT_CLOCK_UNRESOLVED);
+
+	// Every reason has a name, and none of them is "unknown".
+	for (int r = UAC2_PARSE_OK; r <= UAC2_REJECT_CLOCK_UNRESOLVED; r++) {
+		const char *s = uac2_parse_result_str((uac2_parse_result)r);
+		CHECK(s != 0);
+		CHECK(strcmp(s, "unknown") != 0);
+	}
+
+	// The bool wrapper still agrees with the detailed result, which is what
+	// lets every existing caller stay as it is.
+	mutate_reset();
+	CHECK(uac2_parse_config(mut, mut_len, &t));
+	mut[cs = find_cs_iface(0x0A) + 3] = 0x77;
+	CHECK(!uac2_parse_config(mut, mut_len, &t));
+}
+
+// --- P2: clock multiplier in the chain -------------------------------------
+//
+// Rather than invent a device, this rewrites the fixture's existing clock
+// SELECTOR as a clock MULTIPLIER and requires the SAME clock to come out. The
+// two descriptors differ by exactly one thing that matters here: a selector
+// carries bNrInPins at b[4] and its first source at b[5], a multiplier carries
+// bCSourceID at b[4] with no pin count. So moving one byte converts the
+// topology's expression without changing the topology, and the resolved clock
+// id is the control -- if the multiplier hop were silently dropped the chain
+// would fail closed and the parse would be rejected outright.
+static void test_resolves_clock_through_multiplier(void)
+{
+	UAC1Topology before, after;
+
+	mutate_reset();
+	CHECK_EQ(uac2_parse_config_ex(mut, mut_len, &before), UAC2_PARSE_OK);
+
+	long sel = find_cs_iface(0x0B);          // AC_CLOCK_SELECTOR
+	CHECK(sel >= 0);
+	CHECK(mut[sel] >= 6);
+	CHECK_EQ(mut[sel + 4], 1);               // single input, as the parser needs
+	uint8_t upstream = mut[sel + 5];
+
+	mut[sel + 2] = 0x0C;                     // subtype -> CLOCK_MULTIPLIER
+	mut[sel + 4] = upstream;                 // bCSourceID moves to b[4]
+
+	CHECK_EQ(uac2_parse_config_ex(mut, mut_len, &after), UAC2_PARSE_OK);
+	CHECK_EQ(after.clock_source_id, before.clock_source_id);
+	CHECK_EQ(after.clock_source_id, 0x29);   // the MC200's, from P1
+
+	// And the negative: a multiplier whose upstream is nobody must still fail
+	// closed rather than resolve to something arbitrary.
+	mut[sel + 4] = 0x77;
+	UAC1Topology broken;
+	CHECK_EQ(uac2_parse_config_ex(mut, mut_len, &broken),
+	         UAC2_REJECT_CLOCK_UNRESOLVED);
+}
+
+// --- P2: composite device, two audio functions -----------------------------
+//
+// PREPENDS a capture-only audio function to the real descriptor set. That
+// ordering is the point: the decoy is declared first and owns no isochronous
+// OUT endpoint, so a parser that identifies interfaces by class alone would
+// assemble the decoy's AudioControl interface together with the real
+// function's AudioStreaming interface -- a topology describing no device that
+// exists, with the clock chain resolved across the seam. And a parser that
+// scoped to the FIRST audio function would reject a device it can drive
+// perfectly well.
+static const uint8_t decoy_function[] = {
+	// IAD: audio function, interfaces 0x10..0x11.
+	// bFunctionSubClass is 0x00 (FUNCTION_SUBCLASS_UNDEFINED, UAC2 4.6) --
+	// what the real MC200 IAD carries. This decoy originally said 0x01, which
+	// is the intuitive-but-wrong value, and the mismatch against the captured
+	// fixture is what exposed the same wrong assumption in the parser.
+	8, 0x0B, 0x10, 2, 0x01, 0x00, 0x20, 0,
+	// AudioControl interface 0x10
+	9, 0x04, 0x10, 0, 0, 0x01, 0x01, 0x20, 0,
+	//   AC HEADER, bcdADC 0x0200 -- a well-formed UAC2 function
+	9, 0x24, 0x01, 0x00, 0x02, 0x00, 0, 0, 0,
+	// AudioStreaming interface 0x11 alt 1
+	9, 0x04, 0x11, 1, 1, 0x01, 0x02, 0x20, 0,
+	//   AS_GENERAL, 2 channels
+	16, 0x24, 0x01, 0x99, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0,
+	//   isochronous IN endpoint ONLY: this function captures, it cannot play
+	7, 0x05, 0x83, 0x05, 0x00, 0x01, 1,
+};
+
+static void test_composite_two_audio_functions(void)
+{
+	UAC1Topology alone, composite, decoy_only;
+
+	mutate_reset();
+	CHECK_EQ(uac2_parse_config_ex(mut, mut_len, &alone), UAC2_PARSE_OK);
+
+	// The decoy on its own is exactly the rejection the loop must step over.
+	CHECK_EQ(uac2_parse_config_ex(decoy_function, sizeof(decoy_function),
+	                              &decoy_only), UAC2_REJECT_NO_OUT_STREAM);
+
+	// decoy first, real function second
+	memcpy(mut, decoy_function, sizeof(decoy_function));
+	memcpy(mut + sizeof(decoy_function), fixture, fixture_len);
+	mut_len = sizeof(decoy_function) + fixture_len;
+
+	CHECK_EQ(uac2_parse_config_ex(mut, mut_len, &composite), UAC2_PARSE_OK);
+
+	// Everything must come from the REAL function, not a blend of the two.
+	CHECK_EQ(composite.clock_source_id,     alone.clock_source_id);
+	CHECK_EQ(composite.clock_source_id,     0x29);
+	CHECK_EQ(composite.alt_count,           alone.alt_count);
+	CHECK_EQ(composite.streaming_interface, alone.streaming_interface);
+	CHECK_EQ(composite.control_interface,   alone.control_interface);
+	CHECK_EQ(composite.in_alt_count,        alone.in_alt_count);
+	CHECK_EQ(composite.input_streaming_interface,
+	         alone.input_streaming_interface);
+	// The decoy's interface numbers must appear nowhere.
+	CHECK(composite.control_interface   != 0x10);
+	CHECK(composite.streaming_interface != 0x11);
+	// ...and its 2-channel AS_GENERAL must not have become an alt of ours.
+	for (uint8_t i = 0; i < composite.alt_count; i++)
+		CHECK_EQ(composite.alts[i].channels, alone.alts[i].channels);
+}
+
+// --- P2: CS_SAM_FREQ_CONTROL RANGE ----------------------------------------
+static void put16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
+static void put32(uint8_t *p, uint32_t v)
+{
+	p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8);
+	p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+}
+
+static void test_range_setup(void)
+{
+	uint8_t s[8];
+	uac2_clock_range_setup(s, 0x00, 0x29, 26);
+	CHECK_EQ(s[0], 0xA1);                  // class, interface, DEVICE-to-host
+	CHECK_EQ(s[1], 0x02);                  // RANGE, not CUR
+	CHECK_EQ(s[2], 0x00); CHECK_EQ(s[3], 0x01);   // CS_SAM_FREQ << 8
+	CHECK_EQ(s[4], 0x00); CHECK_EQ(s[5], 0x29);   // (clockID<<8) | interface
+	CHECK_EQ(s[6], 26);   CHECK_EQ(s[7], 0);      // wLength
+	// The direction bit is the one that separates this from the CUR write --
+	// get it wrong and the device is asked to RECEIVE its own capabilities.
+	uint8_t cur[8];
+	uac2_clock_cur_setup(cur, 0x00, 0x29);
+	CHECK(cur[0] != s[0]);
+	// A two-byte wLength must survive the split.
+	uac2_clock_range_setup(s, 0x01, 0x05, 0x0102);
+	CHECK_EQ(s[6], 0x02); CHECK_EQ(s[7], 0x01);
+}
+
+static void test_range_parse(void)
+{
+	// Two discrete rates, the ordinary shape: MIN == MAX, RES 0.
+	uint8_t r[2 + 12 * 2];
+	put16(r, 2);
+	put32(r + 2,  44100); put32(r + 6,  44100); put32(r + 10, 0);
+	put32(r + 14, 48000); put32(r + 18, 48000); put32(r + 22, 0);
+
+	CHECK_EQ(uac2_range_count(r, sizeof(r)), 2);
+	uint32_t lo = 0, hi = 0, st = 9;
+	CHECK(uac2_range_get(r, sizeof(r), 0, &lo, &hi, &st));
+	CHECK_EQ(lo, 44100); CHECK_EQ(hi, 44100); CHECK_EQ(st, 0);
+	CHECK(uac2_range_get(r, sizeof(r), 1, &lo, &hi, &st));
+	CHECK_EQ(lo, 48000); CHECK_EQ(hi, 48000);
+	CHECK(!uac2_range_get(r, sizeof(r), 2, &lo, &hi, &st));   // past the end
+	CHECK(uac2_range_get(r, sizeof(r), 0, 0, 0, 0));          // all-null is fine
+
+	CHECK(uac2_range_supports(r, sizeof(r), 44100));
+	CHECK(uac2_range_supports(r, sizeof(r), 48000));
+	CHECK(!uac2_range_supports(r, sizeof(r), 96000));
+	CHECK(!uac2_range_supports(r, sizeof(r), 44099));
+
+	// A stepped subrange: 8000..48000 in steps of 4000.
+	uint8_t s[2 + 12];
+	put16(s, 1);
+	put32(s + 2, 8000); put32(s + 6, 48000); put32(s + 10, 4000);
+	CHECK(uac2_range_supports(s, sizeof(s), 8000));
+	CHECK(uac2_range_supports(s, sizeof(s), 48000));
+	CHECK(uac2_range_supports(s, sizeof(s), 12000));
+	CHECK(!uac2_range_supports(s, sizeof(s), 44100));   // in span, off the step
+	CHECK(!uac2_range_supports(s, sizeof(s), 52000));   // past MAX
+
+	// A continuous subrange: RES 0 with MIN != MAX accepts anything inside.
+	uint8_t c[2 + 12];
+	put16(c, 1);
+	put32(c + 2, 8000); put32(c + 6, 96000); put32(c + 10, 0);
+	CHECK(uac2_range_supports(c, sizeof(c), 44100));
+	CHECK(uac2_range_supports(c, sizeof(c), 8000));
+	CHECK(!uac2_range_supports(c, sizeof(c), 7999));
+
+	// Malformed and truncated replies must not read past the buffer or
+	// invent subranges. A device declaring six and sending two is the case
+	// our own short wLength would produce.
+	CHECK_EQ(uac2_range_count(0, 10), 0);
+	CHECK_EQ(uac2_range_count(r, 0), 0);
+	CHECK_EQ(uac2_range_count(r, 1), 0);
+	CHECK_EQ(uac2_range_count(r, 2), 0);      // header only, no subranges fit
+	CHECK_EQ(uac2_range_count(r, 13), 0);     // one byte short of a subrange
+	CHECK_EQ(uac2_range_count(r, 14), 1);     // exactly one fits
+	uint8_t liar[2 + 12];
+	memcpy(liar, r, sizeof(liar));
+	put16(liar, 6);                            // claims six, carries one
+	CHECK_EQ(uac2_range_count(liar, sizeof(liar)), 1);
+	CHECK(uac2_range_supports(liar, sizeof(liar), 44100));
+	CHECK(!uac2_range_supports(liar, sizeof(liar), 48000));  // never arrived
+
+	// MIN > MAX is nonsense and must be skipped, not trusted.
+	uint8_t bad[2 + 12];
+	put16(bad, 1);
+	put32(bad + 2, 48000); put32(bad + 6, 44100); put32(bad + 10, 0);
+	CHECK(!uac2_range_supports(bad, sizeof(bad), 44100));
+	CHECK(!uac2_range_supports(bad, sizeof(bad), 48000));
+
+	// Zero subranges: a device that supports nothing supports nothing.
+	uint8_t none[2];
+	put16(none, 0);
+	CHECK_EQ(uac2_range_count(none, sizeof(none)), 0);
+	CHECK(!uac2_range_supports(none, sizeof(none), 44100));
+}
+
+// --- P2: the fixture corpus ------------------------------------------------
+//
+// P2's gate is "host suite green over the corpus". Every captured descriptor
+// set goes through the UAC2 parser, including the five UAC1 ones, because what
+// they prove is that the taxonomy answers INFORMATIVELY on real devices: each
+// gets all the way to the version check and is declined as not-uac2, rather
+// than falling out earlier with something vague. Before the taxonomy every one
+// of these was an indistinguishable `false`.
+static uint8_t corpus_buf[4096];
+
+static size_t load_named(const char *path)
+{
+	FILE *f = fopen(path, "rb");
+	if (!f) {
+		// A renamed or missing fixture must FAIL, never silently skip --
+		// a corpus that quietly shrinks to nothing is green and worthless.
+		printf("FAIL cannot open corpus fixture %s: %s\n", path, strerror(errno));
+		failures++; checks++;
+		return 0;
+	}
+	size_t n = fread(corpus_buf, 1, sizeof(corpus_buf), f);
+	fclose(f);
+	return n;
+}
+
+static void test_corpus_through_uac2_parser(void)
+{
+	static const struct { const char *file; int want; } cases[] = {
+		{ "fixtures/dongle_uac1_duplex.bin",          UAC2_REJECT_NOT_UAC2 },
+		{ "fixtures/generalplus_uac1_multirate.bin",  UAC2_REJECT_NOT_UAC2 },
+		{ "fixtures/headset_uac1_config.bin",         UAC2_REJECT_NOT_UAC2 },
+		{ "fixtures/jabra_uac1_multirate.bin",        UAC2_REJECT_NOT_UAC2 },
+		{ "fixtures/xmos_uac1_async_feedback.bin",    UAC2_REJECT_NOT_UAC2 },
+		{ "fixtures/xmos_uac2_2ami8o8.bin",           UAC2_PARSE_OK        },
+	};
+	for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+		size_t n = load_named(cases[i].file);
+		if (n == 0) continue;
+		CHECK(n < sizeof(corpus_buf));       // not silently truncated
+		UAC1Topology t;
+		CHECK_EQ(uac2_parse_config_ex(corpus_buf, n, &t), cases[i].want);
+	}
+
+	// The UAC2 fixture must still yield EXACTLY what P1's minimal parser
+	// produced, and what silicon confirmed. This is the regression half of
+	// P2's gate: taxonomy, multiplier support, IAD scoping and function
+	// iteration all landed underneath it, and none of them may move a field.
+	size_t n = load_named("fixtures/xmos_uac2_2ami8o8.bin");
+	CHECK(n > 0);
+	UAC1Topology t;
+	CHECK_EQ(uac2_parse_config_ex(corpus_buf, n, &t), UAC2_PARSE_OK);
+	CHECK_EQ(t.clock_source_id,           0x29);   // silicon printed clock=41
+	CHECK_EQ(t.control_interface,         0);
+	CHECK_EQ(t.streaming_interface,       1);
+	CHECK_EQ(t.input_streaming_interface, 2);
+	CHECK_EQ(t.alt_count,                 3);
+	CHECK_EQ(t.in_alt_count,              2);
+	CHECK_EQ(t.bcd_adc,                   0x0200);
+}
+
 int main(void)
 {
 	load_fixture();
+	test_corpus_through_uac2_parser();
+	test_range_setup();
+	test_range_parse();
+	test_rejection_taxonomy();
+	test_resolves_clock_through_multiplier();
+	test_composite_two_audio_functions();
 	test_clock_cur_setup();
 	test_fixture_is_the_captured_descriptor_set();
 	test_rejects_garbage();

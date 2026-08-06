@@ -125,7 +125,14 @@ void sitd_free(sitd_t *node);
 // the array bound truncated the count before the assertion saw it. A test that
 // has to be edited in lockstep with a constant will eventually be edited
 // wrongly, or not at all.
-#define EHCI_SITD_POOL_SIZE 40
+// 40 covered full-speed SIMPLEX only: 32 OUT ring + 2 feedback + a test
+// descriptor. Full-speed DUPLEX needs a 32-slot IN ring as well -- 66 against
+// 40 -- which the design spec predicted ("Full speed is easier: SITD_POOL_SIZE
+// 40 against 32 OUT + 2 feedback leaves too little for a 32-slot IN ring, so
+// FS duplex needs the same pool growth") and which the UAC1 dongle is the
+// device that actually needs. 72 leaves the same headroom 40 did. Cost is
+// +32 x 64 B = 2 KB of DMAMEM.
+#define EHCI_SITD_POOL_SIZE 72
 #define EHCI_ITD_POOL_SIZE  96
 
 void itd_pool_init(void);

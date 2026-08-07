@@ -115,6 +115,16 @@ class FS;
 // All common USB functionality is implemented here.
 class USBHost;
 
+// Vector-table entry point for cores whose interrupt table is STATIC -- where
+// attachInterruptVector() does not exist and a handler must be linked into the
+// table at build time rather than installed at run time.  The i.MX RT1176's
+// Cortex-M4 is such a core.  A flat vector array needs a plain C symbol, and
+// USBHost::isr is both private and C++-mangled, so this is the bridge.  It is
+// a FRIEND of USBHost rather than a widening of the public class API, because
+// nothing else has any business calling the ISR.  The CM7 attaches isr() at
+// run time through attachInterruptVector() and never needs this.
+extern "C" void usbhost_isr_entry(void);
+
 // These 3 structures represent the actual USB entities
 // USBHost manipulates.  One Device_t is created for
 // each active USB device.  One Pipe_t is create for
@@ -339,6 +349,9 @@ public: // Maybe others may want/need to contribute memory example HID devices m
     static void contribute_String_Buffers(strbuf_t *strbuf, uint32_t num);
 private:
     static void isr();
+    // Lets a statically-linked vector table reach isr() without making it
+    // public. See the declaration above the class for why.
+    friend void usbhost_isr_entry(void);
     static void convertStringDescriptorToASCIIString(uint8_t string_index, Device_t *dev, const Transfer_t *transfer);
     static void claim_drivers(Device_t *dev);
     static uint32_t assign_address(void);

@@ -25,7 +25,41 @@
 #define USB_HOST_TEENSY36_
 
 #include <stdint.h>
+
+// Arduino.h is included EXPLICITLY, not laundered in through <FS.h> as it was
+// before.  This header genuinely needs it -- NULL in USBDriver's initialiser
+// list, and DEC as a default argument on the print_ helpers, which live in the
+// #else branch and so exist even when USBHOST_PRINT_DEBUG is off.  Depending
+// on a filesystem header to drag in the core was accidental, and it hid what
+// this file actually requires.
+#include <Arduino.h>
+
+// Only the mass storage block needs a real FS: USBFSBase derives from it, so
+// an incomplete type will not do there.  Everywhere else in this header FS
+// appears solely as a POINTER -- BluetoothController's
+// setPairingKeyStorageLocation(FS *) parameter and its `FS *` member -- and a
+// pointer never needs the definition.
+//
+// This matters more than it looks.  <FS.h> pulls in a File/FS hierarchy built
+// on Print/Stream/String, and <SdFat.h> below pulls in SysCall, SdCard,
+// ExFatLib, FatLib, FsLib and sdios.  Including them unconditionally made
+// EVERY consumer carry a filesystem library it almost certainly does not use
+// -- audio and HID sketches were adding SdFat, SPI and EEPROM include
+// directories purely to satisfy a parse -- and made this header unusable
+// anywhere without the full Arduino C++ environment, such as a freestanding
+// second-core image.
+//
+// ★ The include stays EARLY, not moved down beside SdFat.h, and that is
+// deliberate: the FILE_READ/FILE_WRITE reconciliation further down tests
+// `!defined(FS_H)`, so whether <FS.h> has already been seen decides which
+// library's FILE_READ survives.  Moving it changed usb_msc_fs_test's binary.
+// Default builds must be byte-identical, so the ordering is preserved exactly
+// and only the opt-out path differs.
+#if !defined(USBHOST_NO_MASSSTORAGE)
 #include <FS.h>
+#else
+class FS;
+#endif
 
 #if !defined(__MK66FX1M0__) && !defined(__IMXRT1052__) && !defined(__IMXRT1062__) && !defined(__IMXRT1176__)
 #error "USBHost_t36 only works with Teensy 3.6 or Teensy 4.x.  Please select it in Tools > Boards"
@@ -2455,6 +2489,18 @@ private:
 
 //--------------------------------------------------------------------------
 
+#if !defined(USBHOST_NO_MASSSTORAGE)
+// ---------------------------------------------------------------------------
+// MASS STORAGE + FILESYSTEM.  Everything from here to the matching #endif is
+// the only part of this library that needs a filesystem, and it is the reason
+// <SdFat.h> and the complete <FS.h> appear at all.  USBFSBase derives from FS,
+// so an incomplete type will not do here the way it does above.
+//
+// Define USBHOST_NO_MASSSTORAGE to compile it out.  A build that does not link
+// MassStorageDriver.cpp gains nothing from these declarations and pays for
+// them by needing SdFat, SPI and EEPROM on the include path just to parse.
+// Default is OFF (mass storage present) so existing builds are unaffected.
+// ---------------------------------------------------------------------------
 #include <SdFat.h>
 // Use FILE_READ & FILE_WRITE as defined by FS.h
 #if defined(FILE_READ) && !defined(FS_H)
@@ -2911,6 +2957,7 @@ public:
 
 // do not expose these defines in Arduino sketches or other libraries
 #undef MSC_MAX_FILENAME_LEN
+#endif  // !USBHOST_NO_MASSSTORAGE
 
 #include "usb_audio.h"
 

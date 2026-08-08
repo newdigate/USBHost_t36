@@ -58,8 +58,10 @@ static strbuf_t * free_strbuf_list = NULL;
 // TODO: is this really necessary?  Can these be eliminated, so we
 // use only memory from the drivers?
 // RT1176: plain .bss is DTCM, which the EHCI DMA master cannot reach; DMAMEM
-// places data in DMA-reachable OCRAM.  On Teensy .bss is already OCRAM (and
-// DMAMEM is a different, non-zero-init section), so scope this to our platform.
+// places data in DMA-reachable OCRAM.  The guard is RT1176-only NOT because
+// .bss is OCRAM elsewhere -- it is DTCM on Teensy 4.x too -- but because the
+// RT1062's controller can evidently reach DTCM.  Full rationale, and why this
+// must not be extended to __IMXRT1062__, above USBHOST_DMAMEM in ehci.cpp.
 // These seed pools hold Pipe_t (contains the DMA-walked queue head qh) and
 // Transfer_t (contains the DMA-walked qTD).  init_Device_Pipe_Transfer_memory()
 // links them into the free lists explicitly (contribute_*), so the NOLOAD DMAMEM

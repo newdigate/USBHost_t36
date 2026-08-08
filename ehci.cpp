@@ -62,8 +62,32 @@
 #endif
 
 // RT1176: plain .bss is DTCM, which the EHCI DMA master cannot reach; DMAMEM
-// places data in DMA-reachable OCRAM.  On Teensy .bss is already OCRAM (and
-// DMAMEM is a different, non-zero-init section), so scope this to our platform.
+// places data in DMA-reachable OCRAM.  This is the canonical copy of the
+// rationale; the other USBHOST_DMAMEM sites (memory.cpp, hid.cpp,
+// enumeration.cpp, ehci_iso.cpp) carry a summary and point here.
+//
+// WHY THE GUARD IS RT1176-ONLY -- and it is NOT "because .bss is already OCRAM
+// on Teensy".  An earlier revision of this comment said exactly that, and it is
+// wrong on the facts: .bss goes to DTCM on Teensy 4.x too.  Checked 2026-08-08
+// in imxrt1062.ld, imxrt1062_t41.ld AND the EVKB's imxrt1060_evkb.ld -- all
+// three send .bss to DTCM, and only .bss.dma (which is what DMAMEM selects)
+// reaches OCRAM at 0x20200000.  Measured, not just read: periodictable below
+// links at 0x20002000, inside DTCM, in an EVKB_BOARD=rt1062 build.
+//
+// The real reason is that the RT1062's USB controller can evidently REACH
+// DTCM.  Upstream leaves every one of these buffers in plain .bss, and USB host
+// works on the Teensy 4.1 -- same controller, same memory topology.  If DTCM
+// were unreachable there, the periodic schedule would be unreadable and host
+// mode simply would not function on that board.
+//
+// Note that inference is all it is: DTCM reachability has NOT been confirmed
+// against the i.MX RT1062 reference manual or on a bench.  So do not extend
+// DMAMEM to __IMXRT1062__ on the strength of the RT1176 rule -- that rule was
+// established by measurement on RT1176 and does not transfer by analogy, and
+// applying it here would diverge from upstream on its own home silicon.  If a
+// bench ever shows the RT1062 controller failing to read DTCM, that is the
+// evidence that would change this, and it should change upstream too.
+// See README.md (MIMXRT1060-EVKB section) for the same note in prose.
 #if defined(__IMXRT1176__)
 #define USBHOST_DMAMEM DMAMEM
 #else

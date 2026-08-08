@@ -36,8 +36,10 @@
 #define println USBHost::println_
 
 // RT1176: plain .bss is DTCM, which the EHCI DMA master cannot reach; DMAMEM
-// places data in DMA-reachable OCRAM.  On Teensy .bss is already OCRAM (and
-// DMAMEM is a different, non-zero-init section), so scope this to our platform.
+// places data in DMA-reachable OCRAM.  The guard is RT1176-only NOT because
+// .bss is OCRAM elsewhere -- it is DTCM on Teensy 4.x too -- but because the
+// RT1062's controller can evidently reach DTCM.  Full rationale, and why this
+// must not be extended to __IMXRT1062__, above USBHOST_DMAMEM in ehci.cpp.
 #if defined(__IMXRT1176__)
 #define USBHOST_DMAMEM DMAMEM
 #else

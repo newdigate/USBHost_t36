@@ -66,29 +66,38 @@
 // rationale; the other USBHOST_DMAMEM sites (memory.cpp, hid.cpp,
 // enumeration.cpp, ehci_iso.cpp) carry a summary and point here.
 //
-// WHY THE GUARD IS RT1176-ONLY -- and it is NOT "because .bss is already OCRAM
-// on Teensy".  An earlier revision of this comment said exactly that, and it is
-// wrong on the facts: .bss goes to DTCM on Teensy 4.x too.  Checked 2026-08-08
-// in imxrt1062.ld, imxrt1062_t41.ld AND the EVKB's imxrt1060_evkb.ld -- all
-// three send .bss to DTCM, and only .bss.dma (which is what DMAMEM selects)
-// reaches OCRAM at 0x20200000.  Measured, not just read: periodictable below
-// links at 0x20002000, inside DTCM, in an EVKB_BOARD=rt1062 build.
+// WHY THE GUARD COVERS RT1062 -- established on silicon 2026-08-08, on a
+// MIMXRT1060-EVKB with a USB audio adapter in J47.  It cost two wrong theories
+// to get here, both recorded so they are not re-derived:
 //
-// The real reason is that the RT1062's USB controller can evidently REACH
-// DTCM.  Upstream leaves every one of these buffers in plain .bss, and USB host
-// works on the Teensy 4.1 -- same controller, same memory topology.  If DTCM
-// were unreachable there, the periodic schedule would be unreadable and host
-// mode simply would not function on that board.
+//   1. "On Teensy .bss is already OCRAM."  FALSE.  .bss goes to DTCM in
+//      imxrt1062.ld, imxrt1062_t41.ld AND imxrt1060_evkb.ld; only .bss.dma,
+//      which is what DMAMEM selects, reaches OCRAM at 0x20200000.
+//   2. "So the RT1062 controller must be able to REACH DTCM, since upstream
+//      leaves these in .bss and USB host works on a Teensy 4.1."  Also false,
+//      or at least not true on this board.  It was an inference from upstream
+//      working, and the bench refuted it.
 //
-// Note that inference is all it is: DTCM reachability has NOT been confirmed
-// against the i.MX RT1062 reference manual or on a bench.  So do not extend
-// DMAMEM to __IMXRT1062__ on the strength of the RT1176 rule -- that rule was
-// established by measurement on RT1176 and does not transfer by analogy, and
-// applying it here would diverge from upstream on its own home silicon.  If a
-// bench ever shows the RT1062 controller failing to read DTCM, that is the
-// evidence that would change this, and it should change upstream too.
-// See README.md (MIMXRT1060-EVKB section) for the same note in prose.
-#if defined(__IMXRT1176__)
+// What the bench actually showed, with periodictable at 0x20002000 (DTCM):
+//
+//     PORTSC1 = 0x10001805   CCS=1 PE=1 PP=1 -- device connected and powered
+//     USBSTS  = 0x0000d09a   HCH=1 (halted) + SEI=1 (SYSTEM ERROR)
+//
+// SEI is the controller reporting a bus error on its own DMA fetch: it read the
+// periodic list from DTCM, faulted, and halted.  Rebuilding with these buffers
+// in DMAMEM/OCRAM cleared it -- USBSTS went to 0x0000d080, SEI gone, same
+// hardware, same cable, one variable changed.
+//
+// So DTCM is NOT reachable by the OTG2 DMA master on the RT1062 either, and
+// the RT1176 rule holds here for the same reason.  Note this means UPSTREAM
+// has a latent bug on its own home silicon; that is a surprising conclusion,
+// which is why the register evidence is quoted above rather than summarised.
+//
+// Clearing SEI did NOT by itself make the port enumerate -- there is a second,
+// unrelated failure still open on that board (the controller is still halted,
+// HCH=1, with SEI now clear).  Do not read this comment as "USB host works on
+// the EVKB".  See README.md (MIMXRT1060-EVKB section).
+#if defined(__IMXRT1176__) || defined(__IMXRT1062__)
 #define USBHOST_DMAMEM DMAMEM
 #else
 #define USBHOST_DMAMEM

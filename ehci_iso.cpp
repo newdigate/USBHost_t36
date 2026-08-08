@@ -135,19 +135,19 @@ volatile uint32_t *sitd_skip_iso(volatile uint32_t *frame_link)
 
 // USBHOST_DMAMEM is defined per-.cpp in this codebase, not in a shared
 // header (see memory.cpp, ehci.cpp, hid.cpp, enumeration.cpp) -- follow that
-// convention here too. RT1176: plain .bss is DTCM, which the
+// convention here too. RT1176 and RT1062: plain .bss is DTCM, which the
 // EHCI DMA master cannot reach; DMAMEM places data in DMA-reachable OCRAM.
-// The guard is RT1176-only NOT because .bss is OCRAM on Teensy 4.x -- it is
-// DTCM there too -- but because the RT1062's controller can evidently reach
-// DTCM; full rationale above USBHOST_DMAMEM in ehci.cpp. On
+// .bss is DTCM on Teensy 4.x too, and the RT1062 controller cannot reach it
+// either -- both of those were claimed the other way here and both were
+// refuted on silicon; full evidence above USBHOST_DMAMEM in ehci.cpp. On
 // the host build (this file compiled for test/test_sitd) USBHOST_DMAMEM is
 // empty, so the pool below is plain static storage -- that is what makes it
-// testable here at all; on RT1176 it is the difference between the EHCI
+// testable here at all; on target it is the difference between the EHCI
 // controller being able to see these siTDs and silently not.
 // DMAMEM itself comes from the Teensy core, so pull that in only on target.
 // The host build must stay free of Arduino headers -- that is what lets this
 // file be compiled into test/test_sitd and exercised without hardware.
-#if defined(__IMXRT1176__)
+#if defined(__IMXRT1176__) || defined(__IMXRT1062__)
 #include <Arduino.h>
 #define USBHOST_DMAMEM DMAMEM
 #else

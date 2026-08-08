@@ -37,15 +37,31 @@ device-mode only. That was true when written and is no longer: `TYPE_CHIPIDEA`
 derives from `TYPE_SYS_BUS_EHCI` and host support is shared across the RT1062
 and RT1176 SoC models.)
 
-One thing that gate found, recorded here because it is a silicon question and
-not a QEMU one. `periodictable` — the EHCI periodic frame list the controller
-walks via `USBHS_PERIODICLISTBASE` — is declared without `DMAMEM`, so it lands
-in `.bss`, and `.bss` is **DTCM** in `imxrt1062.ld`, `imxrt1062_t41.ld` and the
-EVKB's `imxrt1060_evkb.ld` alike (only `.bss.dma` is OCRAM). The comment above
-that declaration saying "on Teensy `.bss` is already OCRAM" is wrong on the
-facts; its conclusion — do not apply `DMAMEM` on Teensy — may still be right,
-for the different reason that the RT1062's USB controller can evidently reach
-DTCM, since USB host works on the Teensy 4.1. That reachability has **not**
-been confirmed against the i.MX RT1062 reference manual or on an EVKB bench,
-and it is emphatically not true of the RT1176, where DTCM really is unreachable
-by the USB DMA master and every one of these buffers needs `DMAMEM`.
+★ **The RT1062's USB DMA master cannot reach DTCM either, so these buffers need
+`DMAMEM` on this platform too.** Established on a MIMXRT1060-EVKB bench
+2026-08-08, and it is worth stating plainly because it means **upstream has a
+latent bug on its own home silicon**: `periodictable`, `enumbuf`, `enumsetup`
+and the `memory.cpp` seed pools are declared without `DMAMEM`, so they land in
+`.bss` — and `.bss` is **DTCM** in `imxrt1062.ld`, `imxrt1062_t41.ld` and
+`imxrt1060_evkb.ld` alike. Only `.bss.dma`, which is what `DMAMEM` selects,
+reaches OCRAM at `0x20200000`.
+
+With `periodictable` at `0x20002000` (DTCM), the controller reported:
+
+```
+PORTSC1 = 0x10001805   CCS=1 PE=1 PP=1 -- device connected, powered, enabled
+USBSTS  = 0x0000d09a   HCH=1 (halted) + SEI=1 (system error)
+```
+
+`SEI` is the controller faulting on its own DMA fetch of the periodic list.
+Rebuilding with these buffers in `DMAMEM`/OCRAM cleared it — `USBSTS` became
+`0x0000d080`, same board, same cable, one variable changed.
+
+Two earlier revisions of this note got the reasoning wrong and are corrected
+here: first that "`.bss` is already OCRAM on Teensy" (it is not), then that the
+RT1062 could reach DTCM anyway because upstream works on a Teensy 4.1 (an
+inference from upstream working, which the bench refuted).
+
+**This does not mean USB host works on the EVKB.** Clearing `SEI` did not make
+the port enumerate — the controller is still halted (`HCH=1`, `SEI` now clear)
+and a second, unrelated failure remains open on that board.

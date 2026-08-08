@@ -62,6 +62,16 @@ here: first that "`.bss` is already OCRAM on Teensy" (it is not), then that the
 RT1062 could reach DTCM anyway because upstream works on a Teensy 4.1 (an
 inference from upstream working, which the bench refuted).
 
-**This does not mean USB host works on the EVKB.** Clearing `SEI` did not make
-the port enumerate — the controller is still halted (`HCH=1`, `SEI` now clear)
-and a second, unrelated failure remains open on that board.
+**`DMAMEM` alone is not enough on that board — it also needs OCRAM mapped
+non-cached.** Clearing `SEI` did not by itself make the port enumerate. The EVKB
+core enables the D-cache and maps OCRAM write-back/write-allocate, so once these
+descriptors move to `DMAMEM` the CPU's writes can sit in cache while the EHCI
+reads stale physical memory. It then walked a garbage periodic list and halted
+one frame after start — `HCH=1`, `FRINDEX` frozen at `0x8`, and **no error bit**,
+because the port-connect ISR had already acknowledged the fatal status. Upstream
+never meets this, because `.bss` = DTCM is already `MEM_NOCACHE`.
+
+Fixed by mapping OCRAM non-cached on that board (`teensy-cores` `a090c9d`).
+**With both halves in place the MIMXRT1060-EVKB enumerates for real** — a
+GeneralPlus UAC1 device on J47, all 244 descriptor bytes, four interfaces, both
+isochronous endpoints and the HID interface.

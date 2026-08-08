@@ -93,10 +93,17 @@
 // has a latent bug on its own home silicon; that is a surprising conclusion,
 // which is why the register evidence is quoted above rather than summarised.
 //
-// Clearing SEI did NOT by itself make the port enumerate -- there is a second,
-// unrelated failure still open on that board (the controller is still halted,
-// HCH=1, with SEI now clear).  Do not read this comment as "USB host works on
-// the EVKB".  See README.md (MIMXRT1060-EVKB section).
+// Clearing SEI was necessary but NOT sufficient, and the second half is worth
+// knowing because moving these buffers is what causes it.  On the EVKB core,
+// OCRAM is mapped write-back/write-allocate and the D-cache is ON, so once the
+// descriptors live in DMAMEM the CPU's writes can sit in cache while the EHCI
+// reads stale physical memory.  It then walked a garbage periodic list and
+// halted one frame in -- HCH=1, FRINDEX frozen, and NO error bit, because the
+// port-connect ISR had already acked the fatal status.  Upstream never meets
+// this: .bss = DTCM is MEM_NOCACHE, so its descriptors are coherent for free.
+// Fixed by mapping OCRAM non-cached on that board (teensy-cores a090c9d).
+// With both halves in place the EVKB enumerates a real UAC1 device and reads
+// all 244 descriptor bytes.  See README.md (MIMXRT1060-EVKB section).
 #if defined(__IMXRT1176__) || defined(__IMXRT1062__)
 #define USBHOST_DMAMEM DMAMEM
 #else

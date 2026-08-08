@@ -30,5 +30,22 @@ Wiring / usage notes for the EVKB:
   devices draw their current from the board's 5 V.
 
 Note: this has been confirmed by source review and a clean compile for
-`teensy:avr:mimxrt1060evkb`. It is not exercised under the i.MX RT1062 QEMU
-model, whose USB controller is device-mode only (no EHCI host emulation).
+`teensy:avr:mimxrt1060evkb`, and — since 2026-08-08 — by an automated QEMU gate
+that enumerates an emulated UAC1 device on the RT1062's OTG2 host controller.
+(An earlier revision of this note said the i.MX RT1062 QEMU model was
+device-mode only. That was true when written and is no longer: `TYPE_CHIPIDEA`
+derives from `TYPE_SYS_BUS_EHCI` and host support is shared across the RT1062
+and RT1176 SoC models.)
+
+One thing that gate found, recorded here because it is a silicon question and
+not a QEMU one. `periodictable` — the EHCI periodic frame list the controller
+walks via `USBHS_PERIODICLISTBASE` — is declared without `DMAMEM`, so it lands
+in `.bss`, and `.bss` is **DTCM** in `imxrt1062.ld`, `imxrt1062_t41.ld` and the
+EVKB's `imxrt1060_evkb.ld` alike (only `.bss.dma` is OCRAM). The comment above
+that declaration saying "on Teensy `.bss` is already OCRAM" is wrong on the
+facts; its conclusion — do not apply `DMAMEM` on Teensy — may still be right,
+for the different reason that the RT1062's USB controller can evidently reach
+DTCM, since USB host works on the Teensy 4.1. That reachability has **not**
+been confirmed against the i.MX RT1062 reference manual or on an EVKB bench,
+and it is emphatically not true of the RT1176, where DTCM really is unreachable
+by the USB DMA master and every one of these buffers needs `DMAMEM`.

@@ -5,6 +5,31 @@
 
 void USBAudioOut::init()
 {
+	// Both FIFOs must be reset HERE, in the constructor path, not only when a
+	// device attaches -- otherwise their head/tail indices are whatever memory
+	// held before, and the first write() indexes buf[] with garbage.
+	//
+	// This is not theoretical and it is not zero-init: every sketch declares
+	// this driver DMAMEM (the EHCI cannot reach DTCM on the RT1062), and
+	// DMAMEM lands in .bss.dma, which the Teensy startup deliberately does NOT
+	// clear -- memory_clear() covers [_sbss,_ebss], and .bss.dma is a separate
+	// NOLOAD section outside it. So an object here starts with stale RAM, and
+	// any invariant that assumes zero-initialisation is simply wrong.
+	//
+	// It went unnoticed because until now nothing wrote before a device
+	// arrived: the attach path resets the FIFO (beginStreaming /
+	// beginRecording) and every earlier sketch drove writes from there. An
+	// AudioStream graph does not wait -- AudioOutputUSBHost::update() runs as
+	// soon as its AudioConnection makes it active, which is during static
+	// construction, long before USBHost::begin(). On the MIMXRT1060-EVKB that
+	// stored through a ~0x706F4A94 index and took a MemManage fault
+	// (CFSR=0x82 DACCVIOL, MMFAR=0x00FEC1A8) about 8 s into every boot.
+	//
+	// QEMU cannot reproduce it: emulated RAM starts zeroed, so head/tail are
+	// 0 there by accident. Silicon is what found this.
+	usb_audio_fifo_reset(&fifo);
+	usb_audio_fifo_reset(&in_fifo);
+
 	sitd_pool_init();
 	itd_pool_init();
 	contribute_Transfers(mytransfers, sizeof(mytransfers)/sizeof(Transfer_t));
